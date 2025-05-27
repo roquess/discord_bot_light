@@ -211,6 +211,7 @@ handle_gateway_message(Msg, State) ->
 
 %% @doc Dispatch user messages to the configured command handler
 handle_user_message(Content, ChannelId, Author, State) ->
+    io:format("Dispatching message to command handler: ~p~n", [State#state.command_handler]),
     case State#state.command_handler of
         undefined ->
             % No handler configured - do nothing
@@ -218,6 +219,7 @@ handle_user_message(Content, ChannelId, Author, State) ->
         Handler when is_atom(Handler) ->
             % Handler is a module name - call Module:handle_message/4
             try
+                io:format("Calling handler: ~p:handle_message/4~n", [Handler]),
                 Handler:handle_message(Content, ChannelId, Author, State#state.token)
             catch
                 Class:Reason ->
@@ -226,6 +228,7 @@ handle_user_message(Content, ChannelId, Author, State) ->
         {Module, Function} ->
             % Handler is {Module, Function} tuple
             try
+                io:format("Calling handler: ~p:~p/4~n", [Module, Function]),
                 Module:Function(Content, ChannelId, Author, State#state.token)
             catch
                 Class:Reason ->
@@ -234,6 +237,7 @@ handle_user_message(Content, ChannelId, Author, State) ->
         Fun when is_function(Fun, 4) ->
             % Handler is a function with arity 4
             try
+                io:format("Calling handler: function with arity 4~n"),
                 Fun(Content, ChannelId, Author, State#state.token)
             catch
                 Class:Reason ->
