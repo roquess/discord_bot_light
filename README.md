@@ -3,6 +3,10 @@
 A lightweight, modern Erlang library for building Discord bots using the Gateway and HTTP APIs.  
 This library provides a simple, configurable client process that connects to Discord, listens for messages, and lets you define your own command handlers.
 
+[![Hex.pm](https://img.shields.io/hexpm/v/rss_filter.svg)](https://hex.pm/packages/discord_bot_light)
+[![Hex Docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/discord_bot_light)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
 ---
 
 ## Features
@@ -19,7 +23,7 @@ This library provides a simple, configurable client process that connects to Dis
 Add the following to your `rebar.config` dependencies:
 
 ```erlang
-{discord_bot_light, "v0.1.0"}
+{discord_bot_light, "v0.2.0"}
 ```
 
 Make sure you also depend on:
@@ -34,23 +38,20 @@ Make sure you also depend on:
 
 ### 1. Write a Command Handler Module
 
-Create a module that exports `handle_message/4`:
+Create a module that exports `handle_message/3`:
 
 ```erlang
 %%% example_bot_commands.erl
 -module(example_bot_commands).
--export([handle_message/4]).
+-export([handle_message/3]).
 
-handle_message(<<"!hello">>, ChannelId, Author, Token) ->
+handle_message(<<"!hello">>, ChannelId, Author) ->
     Username = maps:get(<<"username">>, Author, <<"Unknown">>),
     Response = <<"Hello, ", Username/binary, "!">>,
-    discord_bot_light_client:send_message(ChannelId, Response, Token);
+    discord_bot_light_client:send_message(ChannelId, Response);
 
-handle_message(<<"!ping">>, ChannelId, _Author, Token) ->
-    discord_bot_light_client:send_message(ChannelId, <<"Pong!">>, Token);
-
-handle_message(<<"!echo ", Rest/binary>>, ChannelId, _Author, Token) ->
-    discord_bot_light_client:send_message(ChannelId, Rest, Token);
+handle_message(<<"!ping">>, ChannelId, _Author) ->
+    discord_bot_light_client:send_message(ChannelId, <<"Pong!">>);
 
 handle_message(_, _, _, _) ->
     ok.
@@ -91,13 +92,12 @@ discord_bot_light_client:edit_message(<<"channel_id">>, <<"message_id">>, <<"New
 Your handler should export:
 
 ```erlang
-handle_message(Content, ChannelId, Author, Token) -> ok | {error, Reason}.
+handle_message(Content, ChannelId, Author) -> ok | {error, Reason}.
 ```
 
 - **Content**: binary, message text
 - **ChannelId**: binary, Discord channel ID
 - **Author**: map, info about the author (id, username, etc.)
-- **Token**: binary, your bot token
 
 ---
 
