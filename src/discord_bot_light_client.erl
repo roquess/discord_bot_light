@@ -23,8 +23,6 @@
           command_handler = undefined  % Command handler configuration
          }).
 
--define(GATEWAY_URL, "gateway.discord.gg").
-
 %%%===================================================================
 %%% Public API
 %%%===================================================================
@@ -36,22 +34,12 @@ start_link(Token) ->
 
 %% @doc Start the Discord bot client with token and options
 %% Options can include:
-%% - {command_handler, Module} - Module implementing handle_message/3
+%% - {command_handler, Module} - Module implementing handle_message/4
 %% - {command_handler, {Module, Function}} - MFA style handler
-%% - {command_handler, Fun} - Function with arity 3
+%% - {command_handler, Fun} - Function with arity 4
 -spec start_link(binary() | string(), list()) -> {ok, pid()} | {error, term()}.
 start_link(Token, Options) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [Token, Options], []).
-
-%% @doc Send a message to a Discord channel
--spec send_message(pid(), binary(), binary()) -> {ok, binary()} | {error, term()}.
-send_message(Pid, ChannelId, Content) ->
-    gen_server:call(Pid, {send_message, ChannelId, Content}).
-
-%% @doc Edit an existing message in a Discord channel
--spec edit_message(pid(), binary(), binary(), binary()) -> {ok, integer(), binary()} | {error, term()}.
-edit_message(Pid, ChannelId, MessageId, Content) ->
-    gen_server:call(Pid, {edit_message, ChannelId, MessageId, Content}).
 
 %%%===================================================================
 %%% gen_server Callbacks
@@ -70,19 +58,19 @@ handle_info(connect, State) ->
     TLSOpts = [
                {verify, verify_peer},
                {cacerts, certifi:cacerts()},
-               {server_name_indication, ?GATEWAY_URL},
+               {server_name_indication, "gateway.discord.gg"},
                {customize_hostname_check, [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}
               ],
     ConnOpts = #{transport => tls, tls_opts => TLSOpts, protocols => [http]},
-
+    
     % Open connection to Discord Gateway
-    case gun:open(?GATEWAY_URL, 443, ConnOpts) of
+    case gun:open("gateway.discord.gg", 443, ConnOpts) of
         {ok, Conn} ->
             % Upgrade to WebSocket connection
             StreamRef = gun:ws_upgrade(Conn, "/?v=10&encoding=json"),
             io:format("Connection established: ~p, Process alive: ~p~n", [Conn, is_process_alive(Conn)]),
             io:format("Stream reference: ~p, Is reference: ~p~n", [StreamRef, is_reference(StreamRef)]),
-
+            
             % Wait for connection to be established
             case gun:await_up(Conn, 10000) of
                 {ok, _Proto} ->
@@ -150,14 +138,14 @@ handle_info(_Info, State) ->
 
 %% @doc Handle Discord Gateway HELLO message (opcode 10)
 %% This initiates the heartbeat and identification process
-handle_gateway_message(#{<<"op">> := 10, <<"d">> := #{<<"heartbeat_interval">> := Interval}},
+handle_gateway_message(#{<<"op">> := 10, <<"d">> := #{<<"heartbeat_interval">> := Interval}}, 
                       State = #state{conn=Conn, stream_ref=StreamRef, token=Token}) ->
     io:format("Received Hello, heartbeat interval: ~p ms~n", [Interval]),
-
+    
     % Cancel any existing heartbeat and start new one
     maybe_cancel_heartbeat(State),
     {ok, HeartbeatRef} = timer:send_interval(Interval, heartbeat),
-
+    
     % Send identification to Discord
     identify(Conn, StreamRef, Token),
     {noreply, State#state{heartbeat_ref = HeartbeatRef}};
@@ -179,7 +167,7 @@ handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"MESSAGE_CREATE">>, <<"d">>
     Author = maps:get(<<"author">>, Data, #{}),
     UserId = maps:get(<<"id">>, Author, <<"unknown">>),
     BotId = State#state.bot_id,
-
+    
     % Ignore messages from the bot itself to prevent loops
     case UserId =:= BotId of
         true ->
@@ -198,7 +186,7 @@ handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"MESSAGE_UPDATE">>, <<"d">>
     Author = maps:get(<<"author">>, Data, #{}),
     UserId = maps:get(<<"id">>, Author, <<"unknown">>),
     BotId = State#state.bot_id,
-
+    
     % Log message updates but don't process them as commands
     case UserId =:= BotId of
         true ->
@@ -229,10 +217,10 @@ handle_user_message(Content, ChannelId, Author, State) ->
             % No handler configured - do nothing
             ok;
         Handler when is_atom(Handler) ->
-            % Handler is a module name - call Module:handle_message/3
+            % Handler is a module name - call Module:handle_message/4
             try
-                io:format("Calling handler: ~p:handle_message/3~n", [Handler]),
-                Handler:handle_message(Content, ChannelId, Author)
+                io:format("Calling handler: ~p:handle_message/4~n", [Handler]),
+                Handler:handle_message(Content, ChannelId, Author, State#state.token)
             catch
                 Class:Reason ->
                     io:format("Error in command handler ~p: ~p:~p~n", [Handler, Class, Reason])
@@ -240,17 +228,17 @@ handle_user_message(Content, ChannelId, Author, State) ->
         {Module, Function} ->
             % Handler is {Module, Function} tuple
             try
-                io:format("Calling handler: ~p:~p/3~n", [Module, Function]),
-                Module:Function(Content, ChannelId, Author)
+                io:format("Calling handler: ~p:~p/4~n", [Module, Function]),
+                Module:Function(Content, ChannelId, Author, State#state.token)
             catch
                 Class:Reason ->
                     io:format("Error in command handler ~p:~p: ~p:~p~n", [Module, Function, Class, Reason])
             end;
-        Fun when is_function(Fun, 3) ->
-            % Handler is a function with arity 3
+        Fun when is_function(Fun, 4) ->
+            % Handler is a function with arity 4
             try
-                io:format("Calling handler: function with arity 3~n"),
-                Fun(Content, ChannelId, Author)
+                io:format("Calling handler: function with arity 4~n"),
+                Fun(Content, ChannelId, Author, State#state.token)
             catch
                 Class:Reason ->
                     io:format("Error in command handler function: ~p:~p~n", [Class, Reason])
@@ -266,13 +254,13 @@ handle_user_message(Content, ChannelId, Author, State) ->
 %% @doc Send identification payload to Discord Gateway
 identify(Conn, StreamRef, Token) ->
     io:format("DEBUG: Token in identify/3: ~p (type: ~p)~n", [Token, erlang:is_binary(Token)]),
-
+    
     % Ensure token is binary
     BinToken = if
         is_binary(Token) -> Token;
         is_list(Token) -> list_to_binary(Token)
     end,
-
+    
     % Build identification payload
     Payload = #{
         op => 2,  % IDENTIFY opcode
@@ -289,14 +277,15 @@ identify(Conn, StreamRef, Token) ->
     io:format("IDENTIFY payload: ~s~n", [jsone:encode(Payload)]),
     gun:ws_send(Conn, StreamRef, {text, jsone:encode(Payload)}).
 
-%% Handle send_message and edit_message calls in handle_call
-handle_call({send_message, ChannelId, Content}, _From, State = #state{token = Token}) ->
+%% @doc Send a message to a Discord channel
+-spec send_message(binary(), binary(), binary()) -> {ok, binary()} | {error, term()}.
+send_message(ChannelId, Content, Token) ->
     % Ensure token is binary
     BinToken = if
         is_binary(Token) -> Token;
         is_list(Token) -> list_to_binary(Token)
     end,
-
+    
     % Configure TLS for Discord API
     TLSOpts = [
         {verify, verify_peer},
@@ -310,9 +299,9 @@ handle_call({send_message, ChannelId, Content}, _From, State = #state{token = To
         connect_timeout => 10000,
         protocols => [http]
     },
-
+    
     io:format("DEBUG: Sending message to ~p: ~p~n", [ChannelId, Content]),
-
+    
     % Open connection to Discord API
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
@@ -325,7 +314,7 @@ handle_call({send_message, ChannelId, Content}, _From, State = #state{token = To
                         {<<"content-type">>, <<"application/json">>}
                     ],
                     Payload = jsone:encode(#{content => Content}),
-
+                    
                     % Send POST request
                     StreamRef = gun:post(Conn, URL, Headers, Payload),
                     case gun:await(Conn, StreamRef, 10000) of
@@ -336,38 +325,40 @@ handle_call({send_message, ChannelId, Content}, _From, State = #state{token = To
                                     % Extract message ID from response
                                     case jsone:decode(Body) of
                                         #{<<"id">> := MessageId} ->
-                                            {reply, {ok, MessageId}, State};
+                                            {ok, MessageId};
                                         _ ->
-                                            {reply, {error, no_message_id}, State}
+                                            {error, no_message_id}
                                     end;
                                 Error ->
                                     gun:close(Conn),
-                                    {reply, Error, State}
+                                    Error
                             end;
                         {response, _, Status, _} ->
                             gun:close(Conn),
-                            {reply, {error, {status, Status}}, State};
+                            {error, {status, Status}};
                         {error, Reason} ->
                             gun:close(Conn),
-                            {reply, {error, Reason}, State}
+                            {error, Reason}
                     end;
                 {error, Reason} ->
                     io:format("Error connecting to Discord API: ~p~n", [Reason]),
                     gun:close(Conn),
-                    {reply, {error, connection_error}, State}
+                    {error, connection_error}
             end;
         {error, Reason} ->
             io:format("Error opening connection to Discord API: ~p~n", [Reason]),
-            {reply, {error, connection_error}, State}
-    end;
+            {error, connection_error}
+    end.
 
-handle_call({edit_message, ChannelId, MessageId, Content}, _From, State = #state{token = Token}) ->
+%% @doc Edit an existing message in a Discord channel
+-spec edit_message(binary(), binary(), binary(), binary()) -> {ok, integer(), binary()} | {error, term()}.
+edit_message(ChannelId, MessageId, Content, Token) ->
     % Ensure token is binary
     BinToken = if
         is_binary(Token) -> Token;
         is_list(Token) -> list_to_binary(Token)
     end,
-
+    
     % Configure TLS for Discord API
     TLSOpts = [
         {verify, verify_peer},
@@ -381,9 +372,9 @@ handle_call({edit_message, ChannelId, MessageId, Content}, _From, State = #state
         connect_timeout => 10000,
         protocols => [http]
     },
-
+    
     io:format("DEBUG: Editing message ~p in channel ~p to: ~p~n", [MessageId, ChannelId, Content]),
-
+    
     % Open connection to Discord API
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
@@ -396,7 +387,7 @@ handle_call({edit_message, ChannelId, MessageId, Content}, _From, State = #state
                         {<<"content-type">>, <<"application/json">>}
                     ],
                     Payload = jsone:encode(#{content => Content}),
-
+                    
                     % Send PATCH request
                     StreamRef = gun:patch(Conn, URL, Headers, Payload),
                     case gun:await(Conn, StreamRef, 10000) of
@@ -404,26 +395,26 @@ handle_call({edit_message, ChannelId, MessageId, Content}, _From, State = #state
                             case gun:await_body(Conn, StreamRef, 10000) of
                                 {ok, Body} ->
                                     gun:close(Conn),
-                                    {reply, {ok, Status, Body}, State};
+                                    {ok, Status, Body};
                                 Error ->
                                     gun:close(Conn),
-                                    {reply, Error, State}
+                                    Error
                             end;
                         {response, fin, Status, _Headers} ->
                             gun:close(Conn),
-                            {reply, {ok, Status, <<>>}, State};
+                            {ok, Status, <<>>};
                         {error, Reason} ->
                             gun:close(Conn),
-                            {reply, {error, Reason}, State}
+                            {error, Reason}
                     end;
                 {error, Reason} ->
                     io:format("Error connecting to Discord API: ~p~n", [Reason]),
                     gun:close(Conn),
-                    {reply, {error, connection_error}, State}
+                    {error, connection_error}
             end;
         {error, Reason} ->
             io:format("Error opening connection to Discord API: ~p~n", [Reason]),
-            {reply, {error, connection_error}, State}
+            {error, connection_error}
     end.
 
 %%%===================================================================
@@ -441,7 +432,10 @@ maybe_cancel_heartbeat(State) ->
 %%% gen_server Boilerplate
 %%%===================================================================
 
-handle_cast(_Msg, State) ->
+handle_call(_Request, _From, State) -> 
+    {reply, ok, State}.
+
+handle_cast(_Msg, State) -> 
     {noreply, State}.
 
 terminate(_Reason, State) ->
@@ -451,6 +445,6 @@ terminate(_Reason, State) ->
         Conn -> gun:close(Conn)
     end.
 
-code_change(_OldVsn, State, _Extra) ->
+code_change(_OldVsn, State, _Extra) -> 
     {ok, State}.
 
