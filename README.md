@@ -3,7 +3,7 @@
 A lightweight, modern Erlang library for building Discord bots using the Gateway and HTTP APIs.  
 This library provides a simple, configurable client process that connects to Discord, listens for messages, and lets you define your own command handlers.
 
-[![Hex.pm](https://img.shields.io/hexpm/v/rss_filter.svg)](https://hex.pm/packages/discord_bot_light)
+[![Hex.pm](https://img.shields.io/hexpm/v/discord_bot_light.svg)](https://hex.pm/packages/discord_bot_light)
 [![Hex Docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/discord_bot_light)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
