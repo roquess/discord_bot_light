@@ -43,15 +43,15 @@ Create a module that exports `handle_message/3`:
 ```erlang
 %%% example_bot_commands.erl
 -module(example_bot_commands).
--export([handle_message/3]).
+-export([handle_message/4]).
 
-handle_message(<<"!hello">>, ChannelId, Author) ->
+handle_message(<<"!hello">>, ChannelId, Author, Token) ->
     Username = maps:get(<<"username">>, Author, <<"Unknown">>),
     Response = <<"Hello, ", Username/binary, "!">>,
-    discord_bot_light_client:send_message(ChannelId, Response);
+    discord_bot_light_client:send_message(ChannelId, Response, Token);
 
-handle_message(<<"!ping">>, ChannelId, _Author) ->
-    discord_bot_light_client:send_message(ChannelId, <<"Pong!">>);
+handle_message(<<"!ping">>, ChannelId, _Author, Token) ->
+    discord_bot_light_client:send_message(ChannelId, <<"Pong!">>, Token);
 
 handle_message(_, _, _, _) ->
     ok.
