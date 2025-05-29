@@ -253,15 +253,10 @@ handle_user_message(Content, ChannelId, Author, State) ->
 
 %% @doc Send identification payload to Discord Gateway
 identify(Conn, StreamRef, Token) ->
-    io:format("DEBUG: Token in identify/3: ~p (type: ~p)~n", [Token, erlang:is_binary(Token)]),
-    
-    % Ensure token is binary
     BinToken = if
         is_binary(Token) -> Token;
         is_list(Token) -> list_to_binary(Token)
     end,
-    
-    % Build identification payload
     Payload = #{
         op => 2,  % IDENTIFY opcode
         d => #{
@@ -274,7 +269,6 @@ identify(Conn, StreamRef, Token) ->
             }
         }
     },
-    io:format("IDENTIFY payload: ~s~n", [jsone:encode(Payload)]),
     gun:ws_send(Conn, StreamRef, {text, jsone:encode(Payload)}).
 
 %% @doc Send a message to a Discord channel
