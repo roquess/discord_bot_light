@@ -6,7 +6,7 @@
 -behaviour(gen_server).
 
 %% API exports
--export([start_link/1, start_link/2, send_message/3, edit_message/4]).
+-export([start_link/1, start_link/2, send_message/3, send_message_with_files/4, edit_message/4]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
@@ -343,6 +343,86 @@ send_message(ChannelId, Content, Token) ->
             io:format("Error opening connection to Discord API: ~p~n", [Reason]),
             {error, connection_error}
     end.
+
+-spec send_message_with_files(binary(), binary(), binary(), [{binary(), binary()}]) -> {ok, binary()} | {error, term()}.
+send_message_with_files(ChannelId, Content, Token, Files) ->
+    BinToken = if is_binary(Token) -> Token; is_list(Token) -> list_to_binary(Token) end,
+    TLSOpts = [
+        {verify, verify_peer},
+        {cacerts, certifi:cacerts()},
+        {server_name_indication, "discord.com"},
+        {customize_hostname_check, [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}
+    ],
+    ConnOpts = #{
+        transport => tls,
+        tls_opts => TLSOpts,
+        connect_timeout => 10000,
+        protocols => [http]
+    },
+    URL = "/api/v10/channels/" ++ binary_to_list(ChannelId) ++ "/messages",
+    case gun:open("discord.com", 443, ConnOpts) of
+        {ok, Conn} ->
+            case gun:await_up(Conn, 10000) of
+                {ok, _Protocol} ->
+                    {Headers, Payload} = 
+                        case Files of
+                            [] ->
+                                {[{<<"authorization">>, <<"Bot ", BinToken/binary>>},
+                                  {<<"content-type">>, <<"application/json">>}],
+                                 jsone:encode(#{content => Content})};
+                            _ ->
+                                Boundary = <<"------------------------", (erlang:integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+                                {multipart_headers(BinToken, Boundary),
+                                 build_multipart(Content, Files, Boundary)}
+                        end,
+                    StreamRef = gun:post(Conn, URL, Headers, Payload),
+                    case gun:await(Conn, StreamRef, 10000) of
+                        {response, nofin, 200, _} ->
+                            case gun:await_body(Conn, StreamRef, 10000) of
+                                {ok, Body} ->
+                                    gun:close(Conn),
+                                    case jsone:decode(Body) of
+                                        #{<<"id">> := MessageId} -> {ok, MessageId};
+                                        _ -> {error, no_message_id}
+                                    end;
+                                Error -> gun:close(Conn), Error
+                            end;
+                        {response, _, Status, _} -> gun:close(Conn), {error, {status, Status}};
+                        {error, Reason} -> gun:close(Conn), {error, Reason}
+                    end;
+                {error, _Reason} -> gun:close(Conn), {error, connection_error}
+            end;
+        {error, _Reason} -> {error, connection_error}
+    end.
+
+multipart_headers(BinToken, Boundary) ->
+    [
+        {<<"authorization">>, <<"Bot ", BinToken/binary>>},
+        {<<"content-type">>, <<"multipart/form-data; boundary=", Boundary/binary>>}
+    ].
+
+build_multipart(Content, Files, Boundary) ->
+    PayloadJson = jsone:encode(#{content => Content}),
+    Parts = [
+        <<"--", Boundary/binary, "\r\n",
+          "Content-Disposition: form-data; name=\"payload_json\"\r\n",
+          "Content-Type: application/json\r\n\r\n",
+          PayloadJson/binary, "\r\n">>
+        | build_file_parts(Files, Boundary, 0)
+    ],
+    Parts2 = Parts ++ [<<"--", Boundary/binary, "--\r\n">>],
+    iolist_to_binary(Parts2).
+
+build_file_parts([], _Boundary, _Idx) -> [];
+build_file_parts([{Filename, Data}|Rest], Boundary, Idx) ->
+    [
+        <<"--", Boundary/binary, "\r\n",
+          "Content-Disposition: form-data; name=\"files[", (integer_to_binary(Idx))/binary, "]\"; filename=\"", Filename/binary, "\"\r\n",
+          "Content-Type: application/octet-stream\r\n\r\n",
+          Data/binary, "\r\n">>
+        | build_file_parts(Rest, Boundary, Idx+1)
+    ].
+
 
 %% @doc Edit an existing message in a Discord channel
 -spec edit_message(binary(), binary(), binary(), binary()) -> {ok, integer(), binary()} | {error, term()}.
