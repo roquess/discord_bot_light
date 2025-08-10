@@ -1,6 +1,7 @@
 %%%===================================================================
 %%% Discord Bot Light Client
 %%% A lightweight Discord bot client with configurable command handlers
+%%% Fixed for Gun 2.1.0 compatibility
 %%%===================================================================
 -module(discord_bot_light_client).
 -behaviour(gen_server).
@@ -20,7 +21,8 @@
           heartbeat_ref,           % Heartbeat timer reference
           stream_ref = undefined,  % WebSocket stream reference
           bot_id = undefined,      % Bot's user ID
-          command_handler = undefined  % Command handler configuration
+          command_handler = undefined,  % Command handler configuration
+          ws_connected = false     % WebSocket connection status
          }).
 
 %%%===================================================================
@@ -54,6 +56,7 @@ init([Token, Options]) ->
 
 %% @doc Handle connection initiation
 handle_info(connect, State) ->
+    io:format("Connecting to Discord Gateway...~n"),
     % Configure TLS options for secure connection to Discord Gateway
     TLSOpts = [
                {verify, verify_peer},
@@ -62,53 +65,63 @@ handle_info(connect, State) ->
                {customize_hostname_check, [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}
               ],
     ConnOpts = #{transport => tls, tls_opts => TLSOpts, protocols => [http]},
-    
+
     % Open connection to Discord Gateway
     case gun:open("gateway.discord.gg", 443, ConnOpts) of
         {ok, Conn} ->
-            % Upgrade to WebSocket connection
-            StreamRef = gun:ws_upgrade(Conn, "/?v=10&encoding=json"),
-            io:format("Connection established: ~p, Process alive: ~p~n", [Conn, is_process_alive(Conn)]),
-            io:format("Stream reference: ~p, Is reference: ~p~n", [StreamRef, is_reference(StreamRef)]),
-            
-            % Wait for connection to be established
+            io:format("Connection opened: ~p~n", [Conn]),
+            % Wait for connection to be established FIRST
             case gun:await_up(Conn, 10000) of
-                {ok, _Proto} ->
-                    io:format("WebSocket upgrade successful~n"),
+                {ok, Protocol} ->
+                    io:format("Connection established with protocol: ~p~n", [Protocol]),
+                    % NOW upgrade to WebSocket
+                    StreamRef = gun:ws_upgrade(Conn, "/?v=10&encoding=json"),
+                    io:format("WebSocket upgrade initiated, stream ref: ~p~n", [StreamRef]),
                     {noreply, State#state{conn=Conn, stream_ref=StreamRef}};
                 {error, Reason} ->
-                    io:format("WebSocket upgrade failed: ~p~n", [Reason]),
+                    io:format("Failed to establish connection: ~p~n", [Reason]),
                     gun:close(Conn),
+                    erlang:send_after(5000, self(), connect),
                     {noreply, State}
             end;
         {error, Reason} ->
+
             io:format("Unable to open connection: ~p~n", [Reason]),
+            erlang:send_after(5000, self(), connect),
             {noreply, State}
     end;
 
 %% @doc Handle WebSocket upgrade confirmation
-handle_info({gun_upgrade, _Conn, StreamRef, [<<"websocket">>], _Headers}, State) ->
-    io:format("WebSocket upgrade confirmed by gun~n"),
-    {noreply, State#state{stream_ref=StreamRef}};
+handle_info({gun_upgrade, Conn, StreamRef, [<<"websocket">>], _Headers}, State) ->
+    io:format("WebSocket upgrade confirmed~n"),
+    {noreply, State#state{conn=Conn, stream_ref=StreamRef, ws_connected=true}};
 
 %% @doc Handle incoming WebSocket messages from Discord Gateway
-handle_info({gun_ws, _Conn, StreamRef, {text, Frame}}, State) ->
+handle_info({gun_ws, Conn, StreamRef, {text, Frame}}, State) ->
     try
         % Decode JSON message from Discord
         Decoded = jsone:decode(Frame),
-        handle_gateway_message(Decoded, State#state{stream_ref=StreamRef})
+        handle_gateway_message(Decoded, State#state{conn=Conn, stream_ref=StreamRef})
     catch
         Class:Reason:Stacktrace ->
-            io:format("Error decoding message: ~p:~p~p~n", [Class, Reason, Stacktrace]),
-            {noreply, State#state{stream_ref=StreamRef}}
+            io:format("Error decoding message: ~p:~p~n~p~n", [Class, Reason, Stacktrace]),
+            {noreply, State}
     end;
 
 %% @doc Handle WebSocket connection drops
-handle_info({gun_down, Conn, ws, _Reason, _, _}, State = #state{conn = Conn}) ->
-    io:format("WebSocket disconnection detected~n"),
+handle_info({gun_down, Conn, ws, Reason, _, _}, State = #state{conn = Conn}) ->
+    io:format("WebSocket disconnection detected: ~p~n", [Reason]),
     maybe_cancel_heartbeat(State),
-    self() ! reconnect,
-    {noreply, State#state{conn = undefined, stream_ref = undefined, heartbeat_ref = undefined}};
+    erlang:send_after(2000, self(), connect),
+    {noreply, State#state{conn = undefined, stream_ref = undefined, heartbeat_ref = undefined, ws_connected = false}};
+
+%% @doc Handle connection errors
+handle_info({gun_error, Conn, StreamRef, Reason}, State = #state{conn = Conn, stream_ref = StreamRef}) ->
+    io:format("Gun error: ~p~n", [Reason]),
+    maybe_cancel_heartbeat(State),
+    gun:close(Conn),
+    erlang:send_after(2000, self(), connect),
+    {noreply, State#state{conn = undefined, stream_ref = undefined, heartbeat_ref = undefined, ws_connected = false}};
 
 %% @doc Handle reconnection attempts
 handle_info(reconnect, State) ->
@@ -117,19 +130,24 @@ handle_info(reconnect, State) ->
     {noreply, State};
 
 %% @doc Handle heartbeat when no connection is active
-handle_info(heartbeat, State = #state{conn = undefined}) ->
-    io:format("No active connection for heartbeat~n"),
+handle_info(heartbeat, State = #state{ws_connected = false}) ->
+    io:format("No active WebSocket connection for heartbeat~n"),
     {noreply, State};
 
 %% @doc Send heartbeat to Discord to maintain connection
-handle_info(heartbeat, State = #state{conn = Conn, stream_ref = StreamRef, seq = Seq}) ->
+handle_info(heartbeat, State = #state{conn = Conn, stream_ref = StreamRef, seq = Seq, ws_connected = true}) ->
     Payload = #{op => 1, d => Seq},
-    gun:ws_send(Conn, StreamRef, {text, jsone:encode(Payload)}),
+    case gun:ws_send(Conn, StreamRef, {text, jsone:encode(Payload)}) of
+        ok -> 
+            io:format("Heartbeat sent~n");
+        Error -> 
+            io:format("Error sending heartbeat: ~p~n", [Error])
+    end,
     {noreply, State};
 
 %% @doc Handle unexpected messages
-handle_info(_Info, State) ->
-    io:format("Unexpected message in handle_info: ~p~n", [_Info]),
+handle_info(Info, State) ->
+    io:format("Unexpected message in handle_info: ~p~n", [Info]),
     {noreply, State}.
 
 %%%===================================================================
@@ -138,14 +156,14 @@ handle_info(_Info, State) ->
 
 %% @doc Handle Discord Gateway HELLO message (opcode 10)
 %% This initiates the heartbeat and identification process
-handle_gateway_message(#{<<"op">> := 10, <<"d">> := #{<<"heartbeat_interval">> := Interval}}, 
-                      State = #state{conn=Conn, stream_ref=StreamRef, token=Token}) ->
+handle_gateway_message(#{<<"op">> := 10, <<"d">> := #{<<"heartbeat_interval">> := Interval}},
+                      State = #state{conn=Conn, stream_ref=StreamRef, token=Token, ws_connected=true}) ->
     io:format("Received Hello, heartbeat interval: ~p ms~n", [Interval]),
-    
+
     % Cancel any existing heartbeat and start new one
     maybe_cancel_heartbeat(State),
     {ok, HeartbeatRef} = timer:send_interval(Interval, heartbeat),
-    
+
     % Send identification to Discord
     identify(Conn, StreamRef, Token),
     {noreply, State#state{heartbeat_ref = HeartbeatRef}};
@@ -167,7 +185,7 @@ handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"MESSAGE_CREATE">>, <<"d">>
     Author = maps:get(<<"author">>, Data, #{}),
     UserId = maps:get(<<"id">>, Author, <<"unknown">>),
     BotId = State#state.bot_id,
-    
+
     % Ignore messages from the bot itself to prevent loops
     case UserId =:= BotId of
         true ->
@@ -186,7 +204,7 @@ handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"MESSAGE_UPDATE">>, <<"d">>
     Author = maps:get(<<"author">>, Data, #{}),
     UserId = maps:get(<<"id">>, Author, <<"unknown">>),
     BotId = State#state.bot_id,
-    
+
     % Log message updates but don't process them as commands
     case UserId =:= BotId of
         true ->
@@ -198,12 +216,20 @@ handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"MESSAGE_UPDATE">>, <<"d">>
 
 %% @doc Handle heartbeat ACK (opcode 11)
 handle_gateway_message(#{<<"op">> := 11}, State) ->
+    io:format("Heartbeat ACK received~n"),
     {noreply, State};
 
 %% @doc Handle any unrecognized Gateway messages
 handle_gateway_message(Msg, State) ->
-    io:format("Unhandled Gateway message: ~p~n", [Msg]),
-    {noreply, State}.
+    Op = maps:get(<<"op">>, Msg, undefined),
+    Type = maps:get(<<"t">>, Msg, undefined),
+    io:format("Unhandled Gateway message - op: ~p, type: ~p~n", [Op, Type]),
+    NewSeq = case maps:get(<<"s">>, Msg, undefined) of
+        null -> State#state.seq;
+        undefined -> State#state.seq;
+        Seq -> Seq
+    end,
+    {noreply, State#state{seq = NewSeq}}.
 
 %%%===================================================================
 %%% Command Handler Dispatch
@@ -269,7 +295,12 @@ identify(Conn, StreamRef, Token) ->
             }
         }
     },
-    gun:ws_send(Conn, StreamRef, {text, jsone:encode(Payload)}).
+    case gun:ws_send(Conn, StreamRef, {text, jsone:encode(Payload)}) of
+        ok -> 
+            io:format("Identification sent~n");
+        Error -> 
+            io:format("Error sending identification: ~p~n", [Error])
+    end.
 
 %% @doc Send a message to a Discord channel
 -spec send_message(binary(), binary(), binary()) -> {ok, binary()} | {error, term()}.
@@ -279,7 +310,7 @@ send_message(ChannelId, Content, Token) ->
         is_binary(Token) -> Token;
         is_list(Token) -> list_to_binary(Token)
     end,
-    
+
     % Configure TLS for Discord API
     TLSOpts = [
         {verify, verify_peer},
@@ -293,9 +324,9 @@ send_message(ChannelId, Content, Token) ->
         connect_timeout => 10000,
         protocols => [http]
     },
-    
+
     io:format("DEBUG: Sending message to ~p: ~p~n", [ChannelId, Content]),
-    
+
     % Open connection to Discord API
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
@@ -308,7 +339,7 @@ send_message(ChannelId, Content, Token) ->
                         {<<"content-type">>, <<"application/json">>}
                     ],
                     Payload = jsone:encode(#{content => Content}),
-                    
+
                     % Send POST request
                     StreamRef = gun:post(Conn, URL, Headers, Payload),
                     case gun:await(Conn, StreamRef, 10000) of
@@ -364,7 +395,7 @@ send_message_with_files(ChannelId, Content, Token, Files) ->
         {ok, Conn} ->
             case gun:await_up(Conn, 10000) of
                 {ok, _Protocol} ->
-                    {Headers, Payload} = 
+                    {Headers, Payload} =
                         case Files of
                             [] ->
                                 {[{<<"authorization">>, <<"Bot ", BinToken/binary>>},
@@ -423,7 +454,6 @@ build_file_parts([{Filename, Data}|Rest], Boundary, Idx) ->
         | build_file_parts(Rest, Boundary, Idx+1)
     ].
 
-
 %% @doc Edit an existing message in a Discord channel
 -spec edit_message(binary(), binary(), binary(), binary()) -> {ok, integer(), binary()} | {error, term()}.
 edit_message(ChannelId, MessageId, Content, Token) ->
@@ -432,7 +462,7 @@ edit_message(ChannelId, MessageId, Content, Token) ->
         is_binary(Token) -> Token;
         is_list(Token) -> list_to_binary(Token)
     end,
-    
+
     % Configure TLS for Discord API
     TLSOpts = [
         {verify, verify_peer},
@@ -446,9 +476,9 @@ edit_message(ChannelId, MessageId, Content, Token) ->
         connect_timeout => 10000,
         protocols => [http]
     },
-    
+
     io:format("DEBUG: Editing message ~p in channel ~p to: ~p~n", [MessageId, ChannelId, Content]),
-    
+
     % Open connection to Discord API
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
@@ -461,7 +491,7 @@ edit_message(ChannelId, MessageId, Content, Token) ->
                         {<<"content-type">>, <<"application/json">>}
                     ],
                     Payload = jsone:encode(#{content => Content}),
-                    
+
                     % Send PATCH request
                     StreamRef = gun:patch(Conn, URL, Headers, Payload),
                     case gun:await(Conn, StreamRef, 10000) of
@@ -506,10 +536,10 @@ maybe_cancel_heartbeat(State) ->
 %%% gen_server Boilerplate
 %%%===================================================================
 
-handle_call(_Request, _From, State) -> 
+handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
-handle_cast(_Msg, State) -> 
+handle_cast(_Msg, State) ->
     {noreply, State}.
 
 terminate(_Reason, State) ->
@@ -519,6 +549,5 @@ terminate(_Reason, State) ->
         Conn -> gun:close(Conn)
     end.
 
-code_change(_OldVsn, State, _Extra) -> 
+code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
-
