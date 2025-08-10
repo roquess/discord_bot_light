@@ -1,7 +1,7 @@
 %%%===================================================================
 %%% Discord Bot Light Client
 %%% A lightweight Discord bot client with configurable command handlers
-%%% Fixed for Gun 2.1.0 compatibility
+%%% Fixed for Gun 2.1.0 compatibility and improved supervisor restart
 %%%===================================================================
 -module(discord_bot_light_client).
 -behaviour(gen_server).
@@ -22,8 +22,13 @@
           stream_ref = undefined,  % WebSocket stream reference
           bot_id = undefined,      % Bot's user ID
           command_handler = undefined,  % Command handler configuration
-          ws_connected = false     % WebSocket connection status
+          ws_connected = false,    % WebSocket connection status
+          reconnect_attempts = 0   % Number of reconnection attempts
          }).
+
+%% Maximum reconnection attempts before giving up
+-define(MAX_RECONNECT_ATTEMPTS, 10).
+-define(RECONNECT_DELAY_BASE, 1000). % Base delay in ms
 
 %%%===================================================================
 %%% Public API
@@ -56,7 +61,89 @@ init([Token, Options]) ->
 
 %% @doc Handle connection initiation
 handle_info(connect, State) ->
-    io:format("Connecting to Discord Gateway...~n"),
+    io:format("Connecting to Discord Gateway (attempt ~p)...~n", [State#state.reconnect_attempts + 1]),
+    
+    % Check if we've exceeded max reconnection attempts
+    case State#state.reconnect_attempts >= ?MAX_RECONNECT_ATTEMPTS of
+        true ->
+            io:format("Max reconnection attempts (~p) exceeded. Stopping.~n", [?MAX_RECONNECT_ATTEMPTS]),
+            {stop, max_reconnect_attempts_exceeded, State};
+        false ->
+            connect_to_gateway(State)
+    end;
+
+%% @doc Handle WebSocket upgrade confirmation
+handle_info({gun_upgrade, Conn, StreamRef, [<<"websocket">>], _Headers}, State) ->
+    io:format("WebSocket upgrade confirmed~n"),
+    % Reset reconnect attempts on successful connection
+    {noreply, State#state{conn=Conn, stream_ref=StreamRef, ws_connected=true, reconnect_attempts=0}};
+
+%% @doc Handle incoming WebSocket messages from Discord Gateway
+handle_info({gun_ws, Conn, StreamRef, {text, Frame}}, State) ->
+    try
+        % Decode JSON message from Discord
+        Decoded = jsone:decode(Frame),
+        handle_gateway_message(Decoded, State#state{conn=Conn, stream_ref=StreamRef})
+    catch
+        Class:Reason:Stacktrace ->
+            io:format("Error decoding message: ~p:~p~n~p~n", [Class, Reason, Stacktrace]),
+            {noreply, State}
+    end;
+
+%% @doc Handle WebSocket connection drops
+handle_info({gun_down, Conn, ws, Reason, _, _}, State = #state{conn = Conn}) ->
+    io:format("WebSocket disconnection detected: ~p~n", [Reason]),
+    maybe_cancel_heartbeat(State),
+    schedule_reconnect(State);
+
+%% @doc Handle connection errors
+handle_info({gun_error, Conn, StreamRef, Reason}, State = #state{conn = Conn, stream_ref = StreamRef}) ->
+    io:format("Gun error: ~p~n", [Reason]),
+    maybe_cancel_heartbeat(State),
+    cleanup_connection(State),
+    schedule_reconnect(State);
+
+%% @doc Handle reconnection attempts
+handle_info(reconnect, State) ->
+    io:format("Attempting reconnection...~n"),
+    self() ! connect,
+    {noreply, State};
+
+%% @doc Handle heartbeat when no connection is active
+handle_info(heartbeat, State = #state{ws_connected = false}) ->
+    io:format("No active WebSocket connection for heartbeat~n"),
+    {noreply, State};
+
+%% @doc Send heartbeat to Discord to maintain connection
+handle_info(heartbeat, State = #state{conn = Conn, stream_ref = StreamRef, seq = Seq, ws_connected = true}) ->
+    Payload = #{op => 1, d => Seq},
+    EncodedPayload = jsone:encode(Payload),
+    
+    % Use the correct Gun 2.1.0 API for WebSocket send
+    case gun:ws_send(Conn, StreamRef, {text, EncodedPayload}) of
+        ok ->
+            io:format("Heartbeat sent~n");
+        Error ->
+            io:format("Error sending heartbeat: ~p~n", [Error]),
+            % If heartbeat fails, we should reconnect
+            schedule_reconnect(State)
+    end,
+    {noreply, State};
+
+%% @doc Handle unexpected messages
+handle_info(Info, State) ->
+    io:format("Unexpected message in handle_info: ~p~n", [Info]),
+    {noreply, State}.
+
+%%%===================================================================
+%%% Connection Management
+%%%===================================================================
+
+%% @doc Establish connection to Discord Gateway
+connect_to_gateway(State) ->
+    % Clean up any existing connection
+    cleanup_connection(State),
+    
     % Configure TLS options for secure connection to Discord Gateway
     TLSOpts = [
                {verify, verify_peer},
@@ -81,74 +168,52 @@ handle_info(connect, State) ->
                 {error, Reason} ->
                     io:format("Failed to establish connection: ~p~n", [Reason]),
                     gun:close(Conn),
-                    erlang:send_after(5000, self(), connect),
-                    {noreply, State}
+                    schedule_reconnect(State)
             end;
         {error, Reason} ->
-
             io:format("Unable to open connection: ~p~n", [Reason]),
-            erlang:send_after(5000, self(), connect),
-            {noreply, State}
-    end;
+            schedule_reconnect(State)
+    end.
 
-%% @doc Handle WebSocket upgrade confirmation
-handle_info({gun_upgrade, Conn, StreamRef, [<<"websocket">>], _Headers}, State) ->
-    io:format("WebSocket upgrade confirmed~n"),
-    {noreply, State#state{conn=Conn, stream_ref=StreamRef, ws_connected=true}};
+%% @doc Schedule a reconnection attempt with exponential backoff
+schedule_reconnect(State) ->
+    NewAttempts = State#state.reconnect_attempts + 1,
+    
+    case NewAttempts >= ?MAX_RECONNECT_ATTEMPTS of
+        true ->
+            io:format("Max reconnection attempts exceeded. Stopping process.~n"),
+            {stop, max_reconnect_attempts, reset_connection_state(State#state{reconnect_attempts = NewAttempts})};
+        false ->
+            % Exponential backoff: base_delay * (2 ^ attempts) with some jitter
+            Delay = ?RECONNECT_DELAY_BASE * (1 bsl min(NewAttempts, 10)) + rand:uniform(1000),
+            io:format("Scheduling reconnect in ~pms (attempt ~p/~p)~n", 
+                     [Delay, NewAttempts, ?MAX_RECONNECT_ATTEMPTS]),
+            erlang:send_after(Delay, self(), reconnect),
+            {noreply, reset_connection_state(State#state{reconnect_attempts = NewAttempts})}
+    end.
 
-%% @doc Handle incoming WebSocket messages from Discord Gateway
-handle_info({gun_ws, Conn, StreamRef, {text, Frame}}, State) ->
-    try
-        % Decode JSON message from Discord
-        Decoded = jsone:decode(Frame),
-        handle_gateway_message(Decoded, State#state{conn=Conn, stream_ref=StreamRef})
-    catch
-        Class:Reason:Stacktrace ->
-            io:format("Error decoding message: ~p:~p~n~p~n", [Class, Reason, Stacktrace]),
-            {noreply, State}
-    end;
+%% @doc Clean up existing connection
+cleanup_connection(State) ->
+    case State#state.conn of
+        undefined -> ok;
+        Conn -> 
+            try
+                gun:close(Conn)
+            catch
+                _:_ -> ok
+            end
+    end.
 
-%% @doc Handle WebSocket connection drops
-handle_info({gun_down, Conn, ws, Reason, _, _}, State = #state{conn = Conn}) ->
-    io:format("WebSocket disconnection detected: ~p~n", [Reason]),
-    maybe_cancel_heartbeat(State),
-    erlang:send_after(2000, self(), connect),
-    {noreply, State#state{conn = undefined, stream_ref = undefined, heartbeat_ref = undefined, ws_connected = false}};
-
-%% @doc Handle connection errors
-handle_info({gun_error, Conn, StreamRef, Reason}, State = #state{conn = Conn, stream_ref = StreamRef}) ->
-    io:format("Gun error: ~p~n", [Reason]),
-    maybe_cancel_heartbeat(State),
-    gun:close(Conn),
-    erlang:send_after(2000, self(), connect),
-    {noreply, State#state{conn = undefined, stream_ref = undefined, heartbeat_ref = undefined, ws_connected = false}};
-
-%% @doc Handle reconnection attempts
-handle_info(reconnect, State) ->
-    io:format("Attempting reconnection...~n"),
-    erlang:send_after(2000, self(), connect),
-    {noreply, State};
-
-%% @doc Handle heartbeat when no connection is active
-handle_info(heartbeat, State = #state{ws_connected = false}) ->
-    io:format("No active WebSocket connection for heartbeat~n"),
-    {noreply, State};
-
-%% @doc Send heartbeat to Discord to maintain connection
-handle_info(heartbeat, State = #state{conn = Conn, stream_ref = StreamRef, seq = Seq, ws_connected = true}) ->
-    Payload = #{op => 1, d => Seq},
-    case gun:ws_send(Conn, StreamRef, {text, jsone:encode(Payload)}) of
-        ok -> 
-            io:format("Heartbeat sent~n");
-        Error -> 
-            io:format("Error sending heartbeat: ~p~n", [Error])
-    end,
-    {noreply, State};
-
-%% @doc Handle unexpected messages
-handle_info(Info, State) ->
-    io:format("Unexpected message in handle_info: ~p~n", [Info]),
-    {noreply, State}.
+%% @doc Reset connection-related state
+reset_connection_state(State) ->
+    State#state{
+        conn = undefined,
+        stream_ref = undefined,
+        heartbeat_ref = undefined,
+        ws_connected = false,
+        seq = null,
+        session_id = null
+    }.
 
 %%%===================================================================
 %%% Gateway Message Handling
@@ -295,10 +360,11 @@ identify(Conn, StreamRef, Token) ->
             }
         }
     },
-    case gun:ws_send(Conn, StreamRef, {text, jsone:encode(Payload)}) of
-        ok -> 
+    EncodedPayload = jsone:encode(Payload),
+    case gun:ws_send(Conn, StreamRef, {text, EncodedPayload}) of
+        ok ->
             io:format("Identification sent~n");
-        Error -> 
+        Error ->
             io:format("Error sending identification: ~p~n", [Error])
     end.
 
@@ -544,10 +610,8 @@ handle_cast(_Msg, State) ->
 
 terminate(_Reason, State) ->
     maybe_cancel_heartbeat(State),
-    case State#state.conn of
-        undefined -> ok;
-        Conn -> gun:close(Conn)
-    end.
+    cleanup_connection(State),
+    ok.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
