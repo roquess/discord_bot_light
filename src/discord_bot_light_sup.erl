@@ -1,15 +1,8 @@
-%%%===================================================================
-%%% Discord Bot Light Supervisor
-%%% Supervises the Discord bot client with configurable command handler
-%%% Enhanced restart strategy and monitoring
-%%% Now includes Gun HTTP client supervision
-%%%===================================================================
 -module(discord_bot_light_sup).
 -behaviour(supervisor).
 
 %% API
--export([start_link/1, start_link/2, get_bot_status/0, restart_bot/0, get_gun_status/0, restart_gun/0]).
-
+-export([start_link/1, start_link/2, get_bot_status/0, restart_bot/0]).
 %% Supervisor callbacks
 -export([init/1]).
 
@@ -19,128 +12,142 @@
 %%% API functions
 %%%===================================================================
 
-%% @doc Start supervisor with just token (no command handler)
--spec start_link(binary() | string()) -> {ok, pid()} | {error, term()}.
 start_link(Token) ->
     start_link(Token, []).
 
-%% @doc Start supervisor with token and options for command handler
-%% Options are passed directly to the discord_bot_light_client
--spec start_link(binary() | string(), list()) -> {ok, pid()} | {error, term()}.
 start_link(Token, Options) ->
+    % Ensure Gun app is running before starting the supervisor
+    ensure_gun_running(),
     supervisor:start_link({local, ?SERVER}, ?MODULE, [Token, Options]).
 
-%% @doc Get the current status of the bot client
--spec get_bot_status() -> {ok, pid()} | {error, not_found}.
 get_bot_status() ->
     case whereis(discord_bot_light_client) of
-        undefined -> 
-            {error, not_found};
-        Pid when is_pid(Pid) -> 
+        undefined -> {error, not_found};
+        Pid when is_pid(Pid) ->
             case is_process_alive(Pid) of
                 true -> {ok, Pid};
                 false -> {error, not_found}
             end
     end.
 
-%% @doc Get the current status of Gun application
--spec get_gun_status() -> {ok, running} | {error, not_running}.
-get_gun_status() ->
-    case application:which_applications() of
-        Apps when is_list(Apps) ->
-            case lists:keyfind(gun, 1, Apps) of
-                false -> {error, not_running};
-                _ -> {ok, running}
-            end;
-        _ -> {error, not_running}
-    end.
-
-%% @doc Manually restart the bot client
--spec restart_bot() -> ok | {error, term()}.
 restart_bot() ->
+    ensure_gun_running(),
     case supervisor:terminate_child(?SERVER, discord_bot_light_client) of
         ok ->
             case supervisor:restart_child(?SERVER, discord_bot_light_client) of
-                {ok, _Pid} -> 
+                {ok, _} ->
                     io:format("Discord bot restarted successfully~n"),
                     ok;
-                {ok, _Pid, _Info} -> 
+                {ok, _, _} ->
                     io:format("Discord bot restarted successfully~n"),
                     ok;
-                {error, Reason} -> 
-                    io:format("Failed to restart Discord bot: ~p~n", [Reason]),
-                    {error, Reason}
+                {error, _} ->
+                    io:format("Failed to restart Discord bot~n"),
+                    {error, failed_to_restart}
             end;
-        {error, Reason} -> 
-            io:format("Failed to terminate Discord bot: ~p~n", [Reason]),
-            {error, Reason}
-    end.
-
-%% @doc Manually restart Gun application
--spec restart_gun() -> ok | {error, term()}.
-restart_gun() ->
-    case supervisor:terminate_child(?SERVER, gun_app_manager) of
-        ok ->
-            case supervisor:restart_child(?SERVER, gun_app_manager) of
-                {ok, _Pid} -> 
-                    io:format("Gun application restarted successfully~n"),
-                    ok;
-                {ok, _Pid, _Info} -> 
-                    io:format("Gun application restarted successfully~n"),
-                    ok;
-                {error, Reason} -> 
-                    io:format("Failed to restart Gun: ~p~n", [Reason]),
-                    {error, Reason}
-            end;
-        {error, Reason} -> 
-            io:format("Failed to terminate Gun: ~p~n", [Reason]),
-            {error, Reason}
+        {error, _} ->
+            io:format("Failed to terminate Discord bot~n"),
+            {error, failed_to_terminate}
     end.
 
 %%%===================================================================
 %%% Supervisor callbacks
 %%%===================================================================
 
-%% @doc Initialize supervisor with child specifications
-%% Enhanced restart strategy for better resilience
 init([Token, Options]) ->
-    % More aggressive restart strategy for better reliability
-    % - rest_for_one: If Gun fails, restart Gun and bot (bot depends on Gun)
-    % - intensity 10: Allow up to 10 restarts
-    % - period 60: Within 60 seconds (more lenient than default)
-    SupFlags = #{
-        strategy => rest_for_one,  % Changed to rest_for_one for dependency handling
-        intensity => 10,           % Allow more restarts
-        period => 60               % Within 60 seconds
-    },
-
-    % Child specifications - Gun first (dependency), then Discord bot
+    SupFlags = {one_for_one, 5, 60},
     ChildSpecs = [
-        % Gun application manager - starts and monitors Gun app
+        % Gun monitor - process that monitors gun_sup
         #{
-            id => gun_app_manager,
-            start => {gun_app_manager, start_link, []},
-            restart => permanent,     % Always restart
-            shutdown => 5000,         % Give 5 seconds for graceful shutdown
+            id => gun_monitor,
+            start => {gun_monitor, start_link, []},
+            restart => permanent,
+            shutdown => 2000,
             type => worker,
-            modules => [gun_app_manager]
+            modules => [gun_monitor]
         },
-        
-        % Discord bot client - depends on Gun
+        % Gun wrapper helper
+        #{
+            id => gun_wrapper,
+            start => {gun_wrapper, start_link, []},
+            restart => permanent,
+            shutdown => 1000,
+            type => worker,
+            modules => [gun_wrapper]
+        },
+        % Discord bot client
         #{
             id => discord_bot_light_client,
             start => {discord_bot_light_client, start_link, [Token, Options]},
-            restart => permanent,     % Always restart
-            shutdown => 10000,        % Give 10 seconds for graceful shutdown
+            restart => transient,
+            shutdown => 10000,
             type => worker,
             modules => [discord_bot_light_client]
         }
     ],
-
-    io:format("Discord bot supervisor started with Gun supervision~n"),
-    io:format("  - Strategy: rest_for_one (Gun -> Bot dependency)~n"),
-    io:format("  - Max restarts: 10 in 60 seconds~n"),
-    io:format("  - Gun shutdown timeout: 5 seconds~n"),
-    io:format("  - Bot shutdown timeout: 10 seconds~n"),
-
+    io:format("Discord bot supervisor started~n"),
     {ok, {SupFlags, ChildSpecs}}.
+
+%%%===================================================================
+%%% Internal functions
+%%%===================================================================
+
+-spec ensure_gun_running() -> ok.
+ensure_gun_running() ->
+    case whereis(gun_sup) of
+        undefined ->
+            io:format("gun_sup not found, restarting Gun application...~n"),
+            % Stop Gun app first (in case it's in bad state)
+            case application:stop(gun) of
+                ok -> io:format("Gun app stopped~n");
+                {error, {not_started, gun}} -> io:format("Gun app was not started~n");
+                {error, _} -> io:format("Gun stop error (ignoring)~n")
+            end,
+            % Small delay
+            timer:sleep(500),
+            % Start Gun app
+            case application:start(gun) of
+                ok ->
+                    io:format("Gun app started successfully~n"),
+                    % Wait longer and verify Gun is really ready
+                    timer:sleep(2000),
+                    wait_for_gun_ready(),
+                    ok;
+                {error, {already_started, gun}} ->
+                    io:format("Gun was already started~n"),
+                    wait_for_gun_ready(),
+                    ok;
+                {error, _} ->
+                    io:format("Failed to start Gun~n"),
+                    ok % Continue anyway
+            end;
+        _ ->
+            wait_for_gun_ready(),
+            ok
+    end.
+
+-spec wait_for_gun_ready() -> ok.
+wait_for_gun_ready() ->
+    wait_for_gun_ready(5).
+
+-spec wait_for_gun_ready(non_neg_integer()) -> ok.
+wait_for_gun_ready(0) ->
+    io:format("Gun readiness check timed out, continuing anyway~n"),
+    ok;
+wait_for_gun_ready(Attempts) ->
+    io:format("Testing Gun readiness (~p attempts left)...~n", [Attempts]),
+    try
+        case gun:open("httpbin.org", 80, #{protocols => [http]}) of
+            {ok, _} ->
+                io:format("Gun is ready!~n"),
+                ok;
+            {error, _} ->
+                timer:sleep(1000),
+                wait_for_gun_ready(Attempts - 1)
+        end
+    catch
+        _:_ ->
+            timer:sleep(1000),
+            wait_for_gun_ready(Attempts - 1)
+    end.
+
