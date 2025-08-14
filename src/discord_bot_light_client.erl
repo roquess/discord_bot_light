@@ -18,12 +18,15 @@
           bot_id = undefined,       % Bot's user ID
           command_handler = undefined,  % Command handler configuration
           ws_connected = false,     % WebSocket connection status
-          reconnect_attempts = 0    % Number of reconnection attempts
+          reconnect_attempts = 0,   % Number of reconnection attempts
+          last_heartbeat_ack = true % Track if last heartbeat was ACKed
          }).
 
 %% Maximum reconnection attempts before giving up
 -define(MAX_RECONNECT_ATTEMPTS, 10).
 -define(RECONNECT_DELAY_BASE, 1000). % Base delay in ms
+-define(CONNECTION_TIMEOUT, 60000).   % 60 seconds timeout
+-define(HEARTBEAT_TIMEOUT, 60000).    % 60 seconds for heartbeat operations
 
 %%%===============
 %%% Public API
@@ -80,6 +83,12 @@ handle_info({gun_error, Conn, StreamRef, Reason}, State = #state{conn = Conn, st
     cleanup_connection(State),
     schedule_reconnect(State);
 
+% Gestion de la perte de connexion générale
+handle_info({gun_down, Conn, _, Reason, _, _}, State = #state{conn = Conn}) ->
+    io:format("Connection down: ~p~n", [Reason]),
+    maybe_cancel_heartbeat(State),
+    schedule_reconnect(State);
+
 handle_info(reconnect, State) ->
     io:format("Attempting reconnection...~n"),
     self() ! connect,
@@ -89,17 +98,30 @@ handle_info(heartbeat, State = #state{ws_connected = false}) ->
     io:format("No active WebSocket connection for heartbeat~n"),
     {noreply, State};
 
+% Vérifier si le dernier heartbeat a été ACK avant d'envoyer le suivant
+handle_info(heartbeat, State = #state{last_heartbeat_ack = false}) ->
+    io:format("Previous heartbeat not ACKed, reconnecting...~n"),
+    maybe_cancel_heartbeat(State),
+    schedule_reconnect(State);
+
 handle_info(heartbeat, State = #state{conn = Conn, stream_ref = StreamRef, seq = Seq, ws_connected = true}) ->
     Payload = #{op => 1, d => Seq},
     EncodedPayload = jsone:encode(Payload),
     case safe_ws_send(State, Conn, StreamRef, {text, EncodedPayload}) of
         ok ->
-            io:format("Heartbeat sent~n");
+            io:format("Heartbeat sent (seq: ~p)~n", [Seq]),
+            {noreply, State#state{last_heartbeat_ack = false}}; % Attendre l'ACK
         Error ->
             io:format("Error sending heartbeat: ~p~n", [Error]),
+            maybe_cancel_heartbeat(State),
             schedule_reconnect(State)
-    end,
-    {noreply, State};
+    end;
+
+% Timeout de heartbeat - si pas de réponse dans les temps
+handle_info(heartbeat_timeout, State) ->
+    io:format("Heartbeat timeout, reconnecting...~n"),
+    maybe_cancel_heartbeat(State),
+    schedule_reconnect(State);
 
 handle_info(Info, State) ->
     io:format("Unexpected message in handle_info: ~p~n", [Info]),
@@ -116,11 +138,19 @@ connect_to_gateway(State) ->
         {server_name_indication, "gateway.discord.gg"},
         {customize_hostname_check, [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}
     ],
-    ConnOpts = #{transport => tls, tls_opts => TLSOpts, protocols => [http]},
+    ConnOpts = #{
+        transport => tls, 
+        tls_opts => TLSOpts, 
+        protocols => [http],
+        retry => 3,
+        retry_timeout => 5000,
+        connect_timeout => ?CONNECTION_TIMEOUT,
+        http_opts => #{keepalive => infinity}
+    },
     case gun:open("gateway.discord.gg", 443, ConnOpts) of
         {ok, Conn} ->
             io:format("Connection opened: ~p~n", [Conn]),
-            case gun:await_up(Conn, 10000) of
+            case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
                 {ok, Protocol} ->
                     io:format("Connection established with protocol: ~p~n", [Protocol]),
                     StreamRef = gun:ws_upgrade(Conn, "/?v=10&encoding=json"),
@@ -143,7 +173,8 @@ schedule_reconnect(State) ->
             io:format("Max reconnection attempts exceeded. Stopping process.~n"),
             {stop, max_reconnect_attempts, reset_connection_state(State#state{reconnect_attempts = NewAttempts})};
         false ->
-            Delay = ?RECONNECT_DELAY_BASE * (1 bsl min(NewAttempts, 10)) + rand:uniform(1000),
+            % Exponential backoff with jitter
+            Delay = min(?RECONNECT_DELAY_BASE * (1 bsl min(NewAttempts, 6)), 10000) + rand:uniform(5000),
             io:format("Scheduling reconnect in ~p ms (attempt ~p/~p)~n",
                      [Delay, NewAttempts, ?MAX_RECONNECT_ATTEMPTS]),
             erlang:send_after(Delay, self(), reconnect),
@@ -164,7 +195,8 @@ reset_connection_state(State) ->
         heartbeat_ref = undefined,
         ws_connected = false,
         seq = null,
-        session_id = null
+        session_id = null,
+        last_heartbeat_ack = true
     }.
 
 %%%===============
@@ -174,9 +206,15 @@ handle_gateway_message(#{<<"op">> := 10, <<"d">> := #{<<"heartbeat_interval">> :
                       State = #state{conn=Conn, stream_ref=StreamRef, token=Token, ws_connected=true}) ->
     io:format("Received Hello, heartbeat interval: ~p ms~n", [Interval]),
     maybe_cancel_heartbeat(State),
-    {ok, HeartbeatRef} = timer:send_interval(Interval, heartbeat),
+    
+    % Ajuster l'intervalle si nécessaire (minimum 5 secondes)
+    AdjustedInterval = max(Interval, 5000),
+    io:format("Using heartbeat interval: ~p ms~n", [AdjustedInterval]),
+    
+    {ok, HeartbeatRef} = timer:send_interval(AdjustedInterval, heartbeat),
     identify(State, Conn, StreamRef, Token),
-    {noreply, State#state{heartbeat_ref = HeartbeatRef}};
+    {noreply, State#state{heartbeat_ref = HeartbeatRef, last_heartbeat_ack = true}};
+
 handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"READY">>, <<"d">> := Data, <<"s">> := Seq},
                       State) ->
     SessionId = maps:get(<<"session_id">>, Data),
@@ -185,6 +223,7 @@ handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"READY">>, <<"d">> := Data,
     BotId = maps:get(<<"id">>, User),
     io:format("Bot ready! Connected as ~s (id=~s)~n", [Username, BotId]),
     {noreply, State#state{seq = Seq, session_id = SessionId, bot_id = BotId}};
+
 handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"MESSAGE_CREATE">>, <<"d">> := Data, <<"s">> := Seq}, State) ->
     Content = maps:get(<<"content">>, Data),
     ChannelId = maps:get(<<"channel_id">>, Data),
@@ -198,6 +237,7 @@ handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"MESSAGE_CREATE">>, <<"d">>
             handle_user_message(Content, ChannelId, Author, State),
             {noreply, State#state{seq = Seq}}
     end;
+
 handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"MESSAGE_UPDATE">>, <<"d">> := Data, <<"s">> := Seq}, State) ->
     Content = maps:get(<<"content">>, Data, <<"(no content)">>),
     ChannelId = maps:get(<<"channel_id">>, Data, <<"unknown">>),
@@ -210,9 +250,30 @@ handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"MESSAGE_UPDATE">>, <<"d">>
             io:format("DEBUG: MESSAGE_UPDATE from ~p: ~p in ~p~n", [UserId, Content, ChannelId]),
             {noreply, State#state{seq = Seq}}
     end;
+
+% Heartbeat ACK - marquer comme reçu
 handle_gateway_message(#{<<"op">> := 11}, State) ->
     io:format("Heartbeat ACK received~n"),
-    {noreply, State};
+    {noreply, State#state{last_heartbeat_ack = true}};
+
+% Reconnect demandé par Discord
+handle_gateway_message(#{<<"op">> := 7}, State) ->
+    io:format("Discord requested reconnect~n"),
+    maybe_cancel_heartbeat(State),
+    schedule_reconnect(State);
+
+% Invalid Session
+handle_gateway_message(#{<<"op">> := 9, <<"d">> := false}, State) ->
+    io:format("Invalid session, starting fresh connection~n"),
+    maybe_cancel_heartbeat(State),
+    NewState = reset_connection_state(State),
+    schedule_reconnect(NewState);
+
+handle_gateway_message(#{<<"op">> := 9, <<"d">> := true}, State) ->
+    io:format("Invalid session but resumable~n"),
+    maybe_cancel_heartbeat(State),
+    schedule_reconnect(State);
+
 handle_gateway_message(Msg, State) ->
     Op = maps:get(<<"op">>, Msg, undefined),
     Type = maps:get(<<"t">>, Msg, undefined),
@@ -302,13 +363,13 @@ send_message(ChannelId, Content, Token) ->
     ConnOpts = #{
         transport => tls,
         tls_opts => TLSOpts,
-        connect_timeout => 10000,
+        connect_timeout => ?CONNECTION_TIMEOUT,
         protocols => [http]
     },
     io:format("DEBUG: Sending message to ~p: ~p~n", [ChannelId, Content]),
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
-            case gun:await_up(Conn, 10000) of
+            case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
                 {ok, _Protocol} ->
                     URL = "/api/v10/channels/" ++ binary_to_list(ChannelId) ++ "/messages",
                     Headers = [
@@ -317,9 +378,9 @@ send_message(ChannelId, Content, Token) ->
                     ],
                     Payload = jsone:encode(#{content => Content}),
                     StreamRef = gun:post(Conn, URL, Headers, Payload),
-                    case gun:await(Conn, StreamRef, 10000) of
+                    case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                         {response, nofin, 200, _Headers} ->
-                            case gun:await_body(Conn, StreamRef, 10000) of
+                            case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
                                     gun:close(Conn),
                                     case jsone:decode(Body) of
@@ -359,13 +420,13 @@ send_message_with_files(ChannelId, Content, Token, Files) ->
     ConnOpts = #{
         transport => tls,
         tls_opts => TLSOpts,
-        connect_timeout => 10000,
+        connect_timeout => ?CONNECTION_TIMEOUT,
         protocols => [http]
     },
     URL = "/api/v10/channels/" ++ binary_to_list(ChannelId) ++ "/messages",
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
-            case gun:await_up(Conn, 10000) of
+            case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
                 {ok, _Protocol} ->
                     {Headers, Payload} =
                         case Files of
@@ -379,9 +440,9 @@ send_message_with_files(ChannelId, Content, Token, Files) ->
                                  build_multipart(Content, Files, Boundary)}
                         end,
                     StreamRef = gun:post(Conn, URL, Headers, Payload),
-                    case gun:await(Conn, StreamRef, 10000) of
+                    case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                         {response, nofin, 200, _} ->
-                            case gun:await_body(Conn, StreamRef, 10000) of
+                            case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
                                     gun:close(Conn),
                                     case jsone:decode(Body) of
@@ -441,13 +502,13 @@ edit_message(ChannelId, MessageId, Content, Token) ->
     ConnOpts = #{
         transport => tls,
         tls_opts => TLSOpts,
-        connect_timeout => 10000,
+        connect_timeout => ?CONNECTION_TIMEOUT,
         protocols => [http]
     },
     io:format("DEBUG: Editing message ~p in channel ~p to: ~p~n", [MessageId, ChannelId, Content]),
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
-            case gun:await_up(Conn, 10000) of
+            case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
                 {ok, _Protocol} ->
                     URL = "/api/v10/channels/" ++ binary_to_list(ChannelId) ++ "/messages/" ++ binary_to_list(MessageId),
                     Headers = [
@@ -456,9 +517,9 @@ edit_message(ChannelId, MessageId, Content, Token) ->
                     ],
                     Payload = jsone:encode(#{content => Content}),
                     StreamRef = gun:patch(Conn, URL, Headers, Payload),
-                    case gun:await(Conn, StreamRef, 10000) of
+                    case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                         {response, nofin, Status, _Headers} ->
-                            case gun:await_body(Conn, StreamRef, 10000) of
+                            case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
                                     gun:close(Conn),
                                     {ok, Status, Body};
@@ -519,4 +580,3 @@ terminate(_Reason, State) ->
     ok.
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
-
