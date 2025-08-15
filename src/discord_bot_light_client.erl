@@ -72,6 +72,15 @@ handle_info({gun_ws, Conn, StreamRef, {text, Frame}}, State) ->
             {noreply, State}
     end;
 
+% Ignore HTTP connection up/down events (from API calls)
+handle_info({gun_up, Conn, http}, State) when State#state.conn =/= Conn ->
+    % This is from an HTTP API connection, ignore silently
+    {noreply, State};
+
+handle_info({gun_down, Conn, http, _Reason, _, _}, State) when State#state.conn =/= Conn ->
+    % This is from an HTTP API connection, ignore silently
+    {noreply, State};
+
 handle_info({gun_down, Conn, ws, Reason, _, _}, State = #state{conn = Conn}) ->
     io:format("WebSocket disconnection detected: ~p~n", [Reason]),
     maybe_cancel_heartbeat(State),
@@ -332,7 +341,7 @@ identify(State, Conn, StreamRef, Token) ->
         op => 2,  % IDENTIFY opcode
         d => #{
             token => BinToken,
-            intents => 33536,  % MESSAGE_CONTENT + GUILD_MESSAGES intents
+            intents => 37632,  % MESSAGE_CONTENT + GUILD_MESSAGES + DIRECT_MESSAGES intents
             properties => #{
                 <<"os">> => <<"linux">>,
                 <<"browser">> => <<"erlang">>,
