@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Discord Bot Light - Erlang Discord Library</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #ffffff;
+            --bg-secondary: #f8f9fa;
+            --bg-code: #1a202c;
+            --text-primary: #2d3748;
+            --text-secondary: #718096;
+            --accent: #5865F2;
+            --accent-hover: #4752C4;
+            --accent-light: #eef0ff;
+            --success: #57F287;
+            --warning: #FEE75C;
+            --danger: #ED4245;
+            --border: #e2e8f0;
+        }
+
+        [data-theme="dark"] {
+            --bg-primary: #1a202c;
+            --bg-secondary: #2d3748;
+            --text-primary: #f7fafc;
+            --text-secondary: #a0aec0;
+            --accent-light: #2d3748;
+            --border: #4a5568;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.7;
+            transition: background 0.3s ease;
+        }
+
+        .nav {
+            position: sticky;
+            top: 0;
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 100;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--accent);
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 2rem;
+            align-items: center;
+        }
+
+        .nav-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            transition: color 0.2s;
+            font-weight: 500;
+        }
+
+        .nav-link:hover {
+            color: var(--accent);
+        }
+
+        .theme-toggle {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+            font-size: 1.25rem;
+            transition: transform 0.2s;
+        }
+
+        .theme-toggle:hover {
+            transform: scale(1.1);
+        }
+
+        .hero {
+            background: linear-gradient(135deg, #5865F2 0%, #7289DA 100%);
+            color: white;
+            padding: 4rem 2rem;
+            text-align: center;
+        }
+
+        .hero h1 {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+        }
+
+        .hero-subtitle {
+            font-size: 1.5rem;
+            margin-bottom: 2rem;
+            opacity: 0.95;
+        }
+
+        .hero-badges {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .badge {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 0.5rem 1rem;
+            border-radius: 2rem;
+            font-size: 0.9rem;
+            backdrop-filter: blur(10px);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 3rem 2rem;
+        }
+
+        .section {
+            margin: 4rem 0;
+        }
+
+        h2 {
+            font-size: 2rem;
+            margin-bottom: 1.5rem;
+            color: var(--text-primary);
+            border-bottom: 3px solid var(--accent);
+            padding-bottom: 0.5rem;
+        }
+
+        h3 {
+            font-size: 1.5rem;
+            margin: 2rem 0 1rem 0;
+            color: var(--accent);
+        }
+
+        h4 {
+            font-size: 1.25rem;
+            margin: 1.5rem 0 0.75rem 0;
+            color: var(--text-primary);
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 2rem;
+            margin: 2rem 0;
+        }
+
+        .feature-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+            padding: 2rem;
+            transition: all 0.3s;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 24px rgba(88, 101, 242, 0.15);
+            border-color: var(--accent);
+        }
+
+        .feature-icon {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .feature-card h3 {
+            margin-top: 0;
+            font-size: 1.25rem;
+        }
+
+        pre {
+            background: var(--bg-code);
+            color: #f7fafc;
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            overflow-x: auto;
+            margin: 1.5rem 0;
+            font-size: 0.9rem;
+            line-height: 1.6;
+            border: 1px solid #2d3748;
+        }
+
+        code {
+            font-family: 'Courier New', Courier, monospace;
+        }
+
+        .inline-code {
+            background: var(--bg-secondary);
+            padding: 0.2rem 0.5rem;
+            border-radius: 0.25rem;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.9em;
+            border: 1px solid var(--border);
+            color: var(--accent);
+        }
+
+        .info-box {
+            background: var(--accent-light);
+            border-left: 4px solid var(--accent);
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            border-radius: 0.5rem;
+        }
+
+        .warning-box {
+            background: #fffbeb;
+            border-left: 4px solid var(--warning);
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            border-radius: 0.5rem;
+        }
+
+        [data-theme="dark"] .warning-box {
+            background: #2d2a1a;
+        }
+
+        .success-box {
+            background: #f0fdf4;
+            border-left: 4px solid var(--success);
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            border-radius: 0.5rem;
+        }
+
+        [data-theme="dark"] .success-box {
+            background: #1a2e1a;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 0.75rem 2rem;
+            background: var(--accent);
+            color: white;
+            text-decoration: none;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            transition: all 0.3s;
+            border: none;
+            cursor: pointer;
+        }
+
+        .btn:hover {
+            background: var(--accent-hover);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(88, 101, 242, 0.3);
+        }
+
+        .btn-outline {
+            background: transparent;
+            border: 2px solid var(--accent);
+            color: var(--accent);
+        }
+
+        .btn-outline:hover {
+            background: var(--accent);
+            color: white;
+        }
+
+        .example-tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            border-bottom: 2px solid var(--border);
+        }
+
+        .tab {
+            padding: 0.75rem 1.5rem;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            color: var(--text-secondary);
+            font-weight: 500;
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .tab.active {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .api-method {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+        }
+
+        .method-signature {
+            font-family: 'Courier New', monospace;
+            font-size: 1.1rem;
+            color: var(--accent);
+            margin-bottom: 1rem;
+        }
+
+        .param-list {
+            margin: 1rem 0;
+        }
+
+        .param {
+            margin: 0.75rem 0;
+            padding-left: 1rem;
+            border-left: 3px solid var(--border);
+        }
+
+        .param-name {
+            font-weight: 600;
+            color: var(--accent);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 0.75rem;
+            border: 1px solid var(--border);
+        }
+
+        th {
+            background: var(--bg-secondary);
+            font-weight: 600;
+        }
+
+        .cta-section {
+            text-align: center;
+            padding: 4rem 2rem;
+            background: var(--accent-light);
+            border-radius: 1rem;
+            margin: 4rem 0;
+        }
+
+        .cta-buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-top: 2rem;
+        }
+
+        footer {
+            background: var(--bg-secondary);
+            padding: 3rem 2rem;
+            text-align: center;
+            color: var(--text-secondary);
+            border-top: 1px solid var(--border);
+        }
+
+        .comment { color: #6a9955; }
+        .string { color: #ce9178; }
+        .keyword { color: #569cd6; }
+        .function { color: #dcdcaa; }
+
+        @media (max-width: 768px) {
+            .hero h1 { font-size: 2rem; }
+            .hero-subtitle { font-size: 1.2rem; }
+            .nav-links { display: none; }
+            .container { padding: 2rem 1rem; }
+        }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-brand">
+            🤖 Discord Bot Light
+        </div>
+        <div class="nav-links">
+            <a href="#features" class="nav-link">Features</a>
+            <a href="#quickstart" class="nav-link">Quick Start</a>
+            <a href="#examples" class="nav-link">Examples</a>
+            <a href="#api" class="nav-link">API</a>
+            <button class="theme-toggle" onclick="toggleTheme()">🌙</button>
+        </div>
+    </nav>
+
+    <div class="hero">
+        <h1>Discord Bot Light</h1>
+        <p class="hero-subtitle">A lightweight, modern Erlang library for building Discord bots</p>
+        <div class="hero-badges">
+            <span class="badge">✨ Simple & Lightweight</span>
+            <span class="badge">🚀 Production Ready</span>
+            <span class="badge">📦 v1.0.0</span>
+            <span class="badge">⚡ Gateway API</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <section class="section" id="features">
+            <h2>Why Discord Bot Light?</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🪶</div>
+                    <h3>Lightweight</h3>
+                    <p>Minimal dependencies, no heavy frameworks. Just what you need to build Discord bots in Erlang.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔧</div>
+                    <h3>Flexible Handlers</h3>
+                    <p>Plug in your own module, function, or anonymous fun for command processing. Your way, your rules.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🌐</div>
+                    <h3>Modern Gateway</h3>
+                    <p>Full WebSocket support with automatic heartbeats, reconnection, and event handling.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📡</div>
+                    <h3>Simple API</h3>
+                    <p>Send and edit messages with simple function calls. No complex abstractions.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔒</div>
+                    <h3>Secure by Default</h3>
+                    <p>TLS with hostname verification, proper certificate handling via certifi.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">♻️</div>
+                    <h3>Auto-Reconnect</h3>
+                    <p>Handles connection drops gracefully with automatic reconnection logic.</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="section" id="quickstart">
+            <h2>Quick Start</h2>
+            
+            <h3>1. Installation</h3>
+            <p>Add <span class="inline-code">discord_bot_light</span> to your <span class="inline-code">rebar.config</span>:</p>
+            <pre><code><span class="comment">%% rebar.config</span>
+{deps, [
+    {discord_bot_light, <span class="string">"1.0.0"</span>}
+]}.
+
+<span class="comment">%% Also required:</span>
+<span class="comment">%% - gun (HTTP/WebSocket)</span>
+<span class="comment">%% - jsone (JSON)</span>
+<span class="comment">%% - certifi (CA certificates)</span></code></pre>
+
+            <h3>2. Create Your Bot Token</h3>
+            <div class="info-box">
+                <p><strong>📝 Discord Developer Portal</strong></p>
+                <ol>
+                    <li>Go to <a href="https://discord.com/developers/applications" target="_blank">Discord Developer Portal</a></li>
+                    <li>Create a New Application</li>
+                    <li>Go to "Bot" section and click "Add Bot"</li>
+                    <li>Enable <strong>MESSAGE CONTENT INTENT</strong> (required!)</li>
+                    <li>Copy your bot token</li>
+                </ol>
+            </div>
+
+            <h3>3. Create a Command Handler</h3>
+            <pre><code><span class="comment">%%% my_bot_commands.erl</span>
+-module(my_bot_commands).
+-export([handle_message/4]).
+
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!level"&gt;&gt;</span>, ChannelId, Author, Token) ->
+    UserId = maps:get(<span class="string">&lt;&lt;"id"&gt;&gt;</span>, Author),
+    Level = calculate_user_level(UserId),
+    Username = maps:get(<span class="string">&lt;&lt;"username"&gt;&gt;</span>, Author),
+    Response = <span class="string">&lt;&lt;</span>Username/binary, <span class="string">" is level "</span>, 
+                (integer_to_binary(Level))/binary, <span class="string">"! 🎖️"&gt;&gt;</span>,
+    discord_bot_light_client:send_message(ChannelId, Response, Token);
+
+<span class="function">handle_message</span>(Content, _ChannelId, Author, _Token) ->
+    <span class="comment">%% Track all messages</span>
+    ets:update_counter(bot_state, message_count, 1),
+    
+    <span class="comment">%% Update user stats</span>
+    UserId = maps:get(<span class="string">&lt;&lt;"id"&gt;&gt;</span>, Author),
+    case ets:lookup(bot_state, {user, UserId}) of
+        [] -> ets:insert(bot_state, {{user, UserId}, 1});
+        [{_, Count}] -> ets:insert(bot_state, {{user, UserId}, Count + 1})
+    end,
+    ok.
+
+<span class="comment">%% Helper functions</span>
+<span class="function">get_top_users</span>() ->
+    AllUsers = ets:match(bot_state, {{user, '$1'}, '$2'}),
+    Sorted = lists:sort(fun([_, C1], [_, C2]) -> C1 > C2 end, AllUsers),
+    lists:sublist(Sorted, 10).
+
+<span class="function">format_leaderboard</span>(Users) ->
+    Lines = [<span class="string">&lt;&lt;"🏆 Top Users:\n"&gt;&gt;</span> | 
+             [format_user_line(N, UserId, Count) || 
+              {N, [UserId, Count]} <- lists:zip(lists:seq(1, length(Users)), Users)]],
+    iolist_to_binary(Lines).
+
+<span class="function">format_user_line</span>(Rank, UserId, Count) ->
+    RankBin = integer_to_binary(Rank),
+    CountBin = integer_to_binary(Count),
+    <span class="string">&lt;&lt;</span>RankBin/binary, <span class="string">". User "</span>, UserId/binary, <span class="string">": "</span>, CountBin/binary, <span class="string">" msgs\n"&gt;&gt;</span>.
+
+<span class="function">calculate_user_level</span>(UserId) ->
+    case ets:lookup(bot_state, {user, UserId}) of
+        [] -> 1;
+        [{_, Count}] -> trunc(math:sqrt(Count / 10)) + 1
+    end.</code></pre>
+            </div>
+        </section>
+
+        <section class="section" id="api">
+            <h2>API Reference</h2>
+
+            <div class="api-method">
+                <div class="method-signature">
+                    start_link(Token, Options) -> {ok, Pid} | {error, Reason}
+                </div>
+                <p>Starts the Discord bot client process.</p>
+                <div class="param-list">
+                    <div class="param">
+                        <span class="param-name">Token</span> :: binary()<br>
+                        Your Discord bot token
+                    </div>
+                    <div class="param">
+                        <span class="param-name">Options</span> :: proplist()<br>
+                        <span class="inline-code">[{command_handler, Module | {Module, Function} | Fun}]</span>
+                    </div>
+                </div>
+                <pre><code><span class="comment">%% Example with module</span>
+discord_bot_light_client:start_link(Token, [{command_handler, my_bot}]).
+
+<span class="comment">%% Example with MFA</span>
+discord_bot_light_client:start_link(Token, [{command_handler, {my_bot, handle}}]).
+
+<span class="comment">%% Example with anonymous function</span>
+Handler = fun(Content, ChannelId, Author, Token) ->
+    io:format("Received: ~p~n", [Content])
+end,
+discord_bot_light_client:start_link(Token, [{command_handler, Handler}]).</code></pre>
+            </div>
+
+            <div class="api-method">
+                <div class="method-signature">
+                    send_message(ChannelId, Content, Token) -> ok | {error, Reason}
+                </div>
+                <p>Sends a message to a Discord channel.</p>
+                <div class="param-list">
+                    <div class="param">
+                        <span class="param-name">ChannelId</span> :: binary()<br>
+                        The Discord channel ID
+                    </div>
+                    <div class="param">
+                        <span class="param-name">Content</span> :: binary()<br>
+                        The message text (max 2000 characters)
+                    </div>
+                    <div class="param">
+                        <span class="param-name">Token</span> :: binary()<br>
+                        Your bot token
+                    </div>
+                </div>
+                <pre><code>ChannelId = <span class="string">&lt;&lt;"123456789012345678"&gt;&gt;</span>,
+Content = <span class="string">&lt;&lt;"Hello, Discord! 👋"&gt;&gt;</span>,
+discord_bot_light_client:send_message(ChannelId, Content, Token).</code></pre>
+            </div>
+
+            <div class="api-method">
+                <div class="method-signature">
+                    edit_message(ChannelId, MessageId, NewContent, Token) -> ok | {error, Reason}
+                </div>
+                <p>Edits an existing message.</p>
+                <div class="param-list">
+                    <div class="param">
+                        <span class="param-name">ChannelId</span> :: binary()<br>
+                        The Discord channel ID
+                    </div>
+                    <div class="param">
+                        <span class="param-name">MessageId</span> :: binary()<br>
+                        The message ID to edit
+                    </div>
+                    <div class="param">
+                        <span class="param-name">NewContent</span> :: binary()<br>
+                        The new message text
+                    </div>
+                    <div class="param">
+                        <span class="param-name">Token</span> :: binary()<br>
+                        Your bot token
+                    </div>
+                </div>
+                <pre><code>MessageId = <span class="string">&lt;&lt;"987654321098765432"&gt;&gt;</span>,
+NewContent = <span class="string">&lt;&lt;"Updated message! ✏️"&gt;&gt;</span>,
+discord_bot_light_client:edit_message(ChannelId, MessageId, NewContent, Token).</code></pre>
+            </div>
+
+            <h3>Command Handler Interface</h3>
+            <p>Your command handler must export:</p>
+            <div class="api-method">
+                <div class="method-signature">
+                    handle_message(Content, ChannelId, Author, Token) -> ok | {error, Reason}
+                </div>
+                <div class="param-list">
+                    <div class="param">
+                        <span class="param-name">Content</span> :: binary()<br>
+                        The message text from the user
+                    </div>
+                    <div class="param">
+                        <span class="param-name">ChannelId</span> :: binary()<br>
+                        The channel where the message was sent
+                    </div>
+                    <div class="param">
+                        <span class="param-name">Author</span> :: map()<br>
+                        Information about the message author<br>
+                        Keys: <span class="inline-code">id</span>, <span class="inline-code">username</span>, <span class="inline-code">discriminator</span>, <span class="inline-code">bot</span>
+                    </div>
+                    <div class="param">
+                        <span class="param-name">Token</span> :: binary()<br>
+                        Your bot token (for sending responses)
+                    </div>
+                </div>
+            </div>
+
+            <h3>Author Map Structure</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Key</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><span class="inline-code">id</span></td>
+                        <td>binary()</td>
+                        <td>User's Discord ID</td>
+                    </tr>
+                    <tr>
+                        <td><span class="inline-code">username</span></td>
+                        <td>binary()</td>
+                        <td>User's display name</td>
+                    </tr>
+                    <tr>
+                        <td><span class="inline-code">discriminator</span></td>
+                        <td>binary()</td>
+                        <td>User's discriminator (e.g., "0001")</td>
+                    </tr>
+                    <tr>
+                        <td><span class="inline-code">bot</span></td>
+                        <td>boolean()</td>
+                        <td>Whether the user is a bot</td>
+                    </tr>
+                    <tr>
+                        <td><span class="inline-code">avatar</span></td>
+                        <td>binary() | null</td>
+                        <td>User's avatar hash</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section class="section">
+            <h2>Configuration Guide</h2>
+
+            <h3>Required Intents</h3>
+            <div class="warning-box">
+                <p><strong>⚠️ Important:</strong> You must enable these intents in the Discord Developer Portal:</p>
+                <ul>
+                    <li><strong>MESSAGE CONTENT</strong> - Required to read message content</li>
+                    <li><strong>GUILD MESSAGES</strong> - Required to receive server messages</li>
+                </ul>
+                <p>Without these, your bot won't receive message events!</p>
+            </div>
+
+            <h3>Integration with OTP Applications</h3>
+            <pre><code><span class="comment">%%% my_app_sup.erl - Supervisor example</span>
+-module(my_app_sup).
+-behaviour(supervisor).
+-export([start_link/0, init/1]).
+
+<span class="function">start_link</span>() ->
+    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+
+<span class="function">init</span>([]) ->
+    Token = application:get_env(my_app, discord_token, <span class="string">&lt;&lt;&gt;&gt;</span>),
+    Handler = my_bot_commands,
+    
+    ChildSpecs = [
+        #{
+            id => discord_bot,
+            start => {discord_bot_light_client, start_link, 
+                     [Token, [{command_handler, Handler}]]},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker
+        }
+    ],
+    
+    {ok, {{one_for_one, 5, 10}, ChildSpecs}}.</code></pre>
+
+            <h3>Environment Configuration</h3>
+            <pre><code><span class="comment">%%% config/sys.config</span>
+[
+    {my_app, [
+        {discord_token, <span class="string">&lt;&lt;"YOUR_BOT_TOKEN_HERE"&gt;&gt;</span>},
+        {command_prefix, <span class="string">&lt;&lt;"!"&gt;&gt;</span>}
+    ]}
+].</code></pre>
+        </section>
+
+        <section class="section">
+            <h2>Best Practices</h2>
+
+            <h3>1. Don't Hardcode Tokens</h3>
+            <div class="info-box">
+                <p>Always load tokens from environment variables or config files:</p>
+                <pre><code><span class="comment">%% Good ✅</span>
+Token = os:getenv("DISCORD_BOT_TOKEN"),
+
+<span class="comment">%% Good ✅</span>
+Token = application:get_env(my_app, discord_token),
+
+<span class="comment">%% Bad ❌</span>
+Token = <span class="string">&lt;&lt;"MTIzNDU2Nzg5MDEyMzQ1Njc4.ABCDEF.xyz..."&gt;&gt;</span>.</code></pre>
+            </div>
+
+            <h3>2. Rate Limiting</h3>
+            <p>Discord has rate limits. Implement backoff for sending many messages:</p>
+            <pre><code><span class="function">send_with_backoff</span>(ChannelId, Content, Token) ->
+    case discord_bot_light_client:send_message(ChannelId, Content, Token) of
+        ok -> ok;
+        {error, rate_limited} ->
+            timer:sleep(1000),
+            send_with_backoff(ChannelId, Content, Token);
+        Error -> Error
+    end.</code></pre>
+
+            <h3>3. Command Pattern Matching</h3>
+            <p>Use binary pattern matching for efficient command parsing:</p>
+            <pre><code><span class="comment">%% Efficient ✅</span>
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!help"&gt;&gt;</span>, ChannelId, _, Token) -> ...;
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!kick ", UserId/binary&gt;&gt;</span>, ChannelId, _, Token) -> ...;
+
+<span class="comment">%% Less efficient ❌</span>
+<span class="function">handle_message</span>(Content, ChannelId, _, Token) ->
+    case binary:split(Content, <span class="string">&lt;&lt;" "&gt;&gt;</span>) of
+        [<span class="string">&lt;&lt;"!help"&gt;&gt;</span>] -> ...;
+        [<span class="string">&lt;&lt;"!kick"&gt;&gt;</span>, UserId] -> ...
+    end.</code></pre>
+
+            <h3>4. Error Handling</h3>
+            <pre><code><span class="function">handle_message</span>(Content, ChannelId, Author, Token) ->
+    try
+        process_command(Content, ChannelId, Author, Token)
+    catch
+        error:Reason ->
+            io:format("Error processing command: ~p~n", [Reason]),
+            discord_bot_light_client:send_message(
+                ChannelId,
+                <span class="string">&lt;&lt;"❌ An error occurred!"&gt;&gt;</span>,
+                Token
+            )
+    end.</code></pre>
+
+            <h3>5. Ignore Bot Messages</h3>
+            <div class="success-box">
+                <p>✅ The client automatically ignores messages from bots (including itself) to prevent infinite loops.</p>
+            </div>
+        </section>
+
+        <section class="section">
+            <h2>Troubleshooting</h2>
+
+            <h3>Bot Not Responding</h3>
+            <div class="info-box">
+                <p><strong>Check these common issues:</strong></p>
+                <ol>
+                    <li>✅ MESSAGE CONTENT intent enabled in Developer Portal</li>
+                    <li>✅ Bot is in the server (invited with correct scopes)</li>
+                    <li>✅ Bot has permission to read/send messages in the channel</li>
+                    <li>✅ Token is correct and not expired</li>
+                    <li>✅ Your command handler is properly registered</li>
+                </ol>
+            </div>
+
+            <h3>Connection Issues</h3>
+            <pre><code><span class="comment">%% Check if process is running</span>
+whereis(discord_bot_light_client).
+
+<span class="comment">%% Check process info</span>
+erlang:process_info(Pid).
+
+<span class="comment">%% Enable debug logging (if implemented)</span>
+application:set_env(discord_bot_light, log_level, debug).</code></pre>
+
+            <h3>WebSocket Disconnects</h3>
+            <p>The client handles reconnection automatically. If you experience frequent disconnects:</p>
+            <ul>
+                <li>Check your network stability</li>
+                <li>Verify your heartbeat handling</li>
+                <li>Monitor Discord API status at <a href="https://discordstatus.com" target="_blank">discordstatus.com</a></li>
+            </ul>
+        </section>
+
+        <div class="cta-section">
+            <h2>Ready to Build Your Bot?</h2>
+            <p style="margin: 1rem 0; font-size: 1.1rem;">Get started with Discord Bot Light today!</p>
+            <div class="cta-buttons">
+                <a href="https://github.com/roquess/discord_bot_light" class="btn" target="_blank">
+                    📂 View on GitHub
+                </a>
+                <a href="https://hex.pm/packages/discord_bot_light" class="btn btn-outline" target="_blank">
+                    📦 Hex.pm Package
+                </a>
+            </div>
+        </div>
+
+        <section class="section">
+            <h2>Community & Support</h2>
+            <p>Need help or want to contribute?</p>
+            <ul>
+                <li>🐛 <a href="https://github.com/roquess/discord_bot_light/issues">Report Issues</a> on GitHub</li>
+                <li>💡 <a href="https://github.com/roquess/discord_bot_light/pulls">Submit Pull Requests</a></li>
+                <li>📖 Check the <a href="https://github.com/roquess/discord_bot_light/blob/main/README.md">README</a> for more details</li>
+                <li>⭐ Star the repo if you find it useful!</li>
+            </ul>
+        </section>
+    </div>
+
+    <footer>
+        <p><strong>Discord Bot Light</strong> v1.0.0</p>
+        <p style="margin-top: 0.5rem;">Built with ❤️ by <a href="https://github.com/roquess" style="color: var(--accent); text-decoration: none;">@roquess</a></p>
+        <p style="margin-top: 0.5rem; font-size: 0.9rem;">Licensed under Apache License 2.0</p>
+        <p style="margin-top: 1rem; font-size: 0.85rem; opacity: 0.7;">
+            Discord is a trademark of Discord Inc. This project is not affiliated with Discord.
+        </p>
+    </footer>
+
+    <script>
+        function toggleTheme() {
+            const html = document.documentElement;
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            const btn = document.querySelector('.theme-toggle');
+            
+            html.setAttribute('data-theme', newTheme);
+            btn.textContent = newTheme === 'dark' ? '☀️' : '🌙';
+            localStorage.setItem('theme', newTheme);
+        }
+
+        function showTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected tab
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        // Load saved theme
+        const savedTheme = localStorage.getItem('theme') || 'light';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+        document.querySelector('.theme-toggle').textContent = savedTheme === 'dark' ? '☀️' : '🌙';
+
+        // Smooth scrolling
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            });
+        });
+    </script>
+</body>
+</html>handle_message</span>(<span class="string">&lt;&lt;"!hello"&gt;&gt;</span>, ChannelId, Author, Token) ->
+    Username = maps:get(<span class="string">&lt;&lt;"username"&gt;&gt;</span>, Author, <span class="string">&lt;&lt;"Unknown"&gt;&gt;</span>),
+    Response = <span class="string">&lt;&lt;"Hello, "</span>, Username/binary, <span class="string">"!"&gt;&gt;</span>,
+    discord_bot_light_client:send_message(ChannelId, Response, Token);
+
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!ping"&gt;&gt;</span>, ChannelId, _Author, Token) ->
+    discord_bot_light_client:send_message(ChannelId, <span class="string">&lt;&lt;"Pong!"&gt;&gt;</span>, Token);
+
+<span class="function">handle_message</span>(_, _, _, _) ->
+    ok.</code></pre>
+
+            <h3>4. Start Your Bot</h3>
+            <pre><code><span class="comment">%% In your application or shell</span>
+Token = <span class="string">&lt;&lt;"YOUR_DISCORD_BOT_TOKEN"&gt;&gt;</span>,
+Handler = my_bot_commands,
+{ok, Pid} = discord_bot_light_client:start_link(Token, [{command_handler, Handler}]).</code></pre>
+
+            <div class="success-box">
+                <p><strong>🎉 That's it!</strong> Your bot is now running and will respond to <span class="inline-code">!hello</span> and <span class="inline-code">!ping</span> commands.</p>
+            </div>
+        </section>
+
+        <section class="section" id="examples">
+            <h2>Bot Examples</h2>
+
+            <div class="example-tabs">
+                <button class="tab active" onclick="showTab('moderation')">Moderation Bot</button>
+                <button class="tab" onclick="showTab('fun')">Fun Commands</button>
+                <button class="tab" onclick="showTab('utility')">Utility Bot</button>
+                <button class="tab" onclick="showTab('advanced')">Advanced</button>
+            </div>
+
+            <div id="moderation" class="tab-content active">
+                <h3>Moderation Bot</h3>
+                <p>Basic moderation commands with permission checks:</p>
+                <pre><code><span class="comment">%%% moderation_bot.erl</span>
+-module(moderation_bot).
+-export([handle_message/4]).
+
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!kick ", Rest/binary&gt;&gt;</span>, ChannelId, Author, Token) ->
+    case is_moderator(Author) of
+        true ->
+            UserId = extract_user_id(Rest),
+            kick_user(ChannelId, UserId, Token);
+        false ->
+            discord_bot_light_client:send_message(
+                ChannelId, 
+                <span class="string">&lt;&lt;"❌ You don't have permission!"&gt;&gt;</span>, 
+                Token
+            )
+    end;
+
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!ban ", Rest/binary&gt;&gt;</span>, ChannelId, Author, Token) ->
+    case is_admin(Author) of
+        true ->
+            UserId = extract_user_id(Rest),
+            ban_user(ChannelId, UserId, Token);
+        false ->
+            discord_bot_light_client:send_message(
+                ChannelId, 
+                <span class="string">&lt;&lt;"❌ Admin only!"&gt;&gt;</span>, 
+                Token
+            )
+    end;
+
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!warn ", Rest/binary&gt;&gt;</span>, ChannelId, _Author, Token) ->
+    [UserId, Reason] = binary:split(Rest, <span class="string">&lt;&lt;" "&gt;&gt;</span>),
+    Message = <span class="string">&lt;&lt;"⚠️ Warning: "</span>, Reason/binary&gt;&gt;,
+    discord_bot_light_client:send_message(ChannelId, Message, Token);
+
+<span class="function">handle_message</span>(_, _, _, _) ->
+    ok.
+
+<span class="comment">%% Helper functions</span>
+<span class="function">is_moderator</span>(Author) ->
+    <span class="comment">%% Check roles from Author map</span>
+    Roles = maps:get(<span class="string">&lt;&lt;"roles"&gt;&gt;</span>, Author, []),
+    lists:member(<span class="string">&lt;&lt;"moderator"&gt;&gt;</span>, Roles).
+
+<span class="function">is_admin</span>(Author) ->
+    Roles = maps:get(<span class="string">&lt;&lt;"roles"&gt;&gt;</span>, Author, []),
+    lists:member(<span class="string">&lt;&lt;"admin"&gt;&gt;</span>, Roles).</code></pre>
+            </div>
+
+            <div id="fun" class="tab-content">
+                <h3>Fun Commands Bot</h3>
+                <p>Entertainment commands for your server:</p>
+                <pre><code><span class="comment">%%% fun_bot.erl</span>
+-module(fun_bot).
+-export([handle_message/4]).
+
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!8ball ", Question/binary&gt;&gt;</span>, ChannelId, _Author, Token) ->
+    Answers = [
+        <span class="string">&lt;&lt;"Yes, definitely!"&gt;&gt;</span>,
+        <span class="string">&lt;&lt;"Maybe..."&gt;&gt;</span>,
+        <span class="string">&lt;&lt;"Don't count on it."&gt;&gt;</span>,
+        <span class="string">&lt;&lt;"Ask again later."&gt;&gt;</span>
+    ],
+    Answer = lists:nth(rand:uniform(length(Answers)), Answers),
+    Response = <span class="string">&lt;&lt;"🎱 "</span>, Answer/binary&gt;&gt;,
+    discord_bot_light_client:send_message(ChannelId, Response, Token);
+
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!roll"&gt;&gt;</span>, ChannelId, Author, Token) ->
+    Roll = integer_to_binary(rand:uniform(100)),
+    Username = maps:get(<span class="string">&lt;&lt;"username"&gt;&gt;</span>, Author),
+    Response = <span class="string">&lt;&lt;</span>Username/binary, <span class="string">" rolled: 🎲 "</span>, Roll/binary&gt;&gt;,
+    discord_bot_light_client:send_message(ChannelId, Response, Token);
+
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!coinflip"&gt;&gt;</span>, ChannelId, _Author, Token) ->
+    Result = case rand:uniform(2) of
+        1 -> <span class="string">&lt;&lt;"Heads! 🪙"&gt;&gt;</span>;
+        2 -> <span class="string">&lt;&lt;"Tails! 🪙"&gt;&gt;</span>
+    end,
+    discord_bot_light_client:send_message(ChannelId, Result, Token);
+
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!joke"&gt;&gt;</span>, ChannelId, _Author, Token) ->
+    Jokes = [
+        <span class="string">&lt;&lt;"Why don't programmers like nature? It has too many bugs! 🐛"&gt;&gt;</span>,
+        <span class="string">&lt;&lt;"A SQL query walks into a bar, walks up to two tables and asks... 'Can I join you?' 🍻"&gt;&gt;</span>,
+        <span class="string">&lt;&lt;"There are only 10 types of people: those who understand binary and those who don't. 😄"&gt;&gt;</span>
+    ],
+    Joke = lists:nth(rand:uniform(length(Jokes)), Jokes),
+    discord_bot_light_client:send_message(ChannelId, Joke, Token);
+
+<span class="function">handle_message</span>(_, _, _, _) ->
+    ok.</code></pre>
+            </div>
+
+            <div id="utility" class="tab-content">
+                <h3>Utility Bot</h3>
+                <p>Useful server utilities and information:</p>
+                <pre><code><span class="comment">%%% utility_bot.erl</span>
+-module(utility_bot).
+-export([handle_message/4]).
+
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!serverinfo"&gt;&gt;</span>, ChannelId, _Author, Token) ->
+    Info = <span class="string">&lt;&lt;"📊 Server Information\n"
+           "Members: 1,234\n"
+           "Created: 2020-01-01\n"
+           "Region: US-West"&gt;&gt;</span>,
+    discord_bot_light_client:send_message(ChannelId, Info, Token);
+
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!userinfo"&gt;&gt;</span>, ChannelId, Author, Token) ->
+    Username = maps:get(<span class="string">&lt;&lt;"username"&gt;&gt;</span>, Author),
+    UserId = maps:get(<span class="string">&lt;&lt;"id"&gt;&gt;</span>, Author),
+    Info = <span class="string">&lt;&lt;"👤 User: "</span>, Username/binary, <span class="string">"\n"
+           "ID: "</span>, UserId/binary&gt;&gt;,
+    discord_bot_light_client:send_message(ChannelId, Info, Token);
+
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!poll ", Question/binary&gt;&gt;</span>, ChannelId, _Author, Token) ->
+    Message = <span class="string">&lt;&lt;"📊 Poll: "</span>, Question/binary, <span class="string">"\n\nReact with 👍 or 👎"&gt;&gt;</span>,
+    discord_bot_light_client:send_message(ChannelId, Message, Token);
+
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!remind ", Rest/binary&gt;&gt;</span>, ChannelId, Author, Token) ->
+    Username = maps:get(<span class="string">&lt;&lt;"username"&gt;&gt;</span>, Author),
+    Response = <span class="string">&lt;&lt;"⏰ I'll remind "</span>, Username/binary, <span class="string">": "</span>, Rest/binary&gt;&gt;,
+    discord_bot_light_client:send_message(ChannelId, Response, Token),
+    <span class="comment">%% Set up timer for reminder</span>
+    spawn(fun() -> 
+        timer:sleep(60000), <span class="comment">%% 1 minute</span>
+        Reminder = <span class="string">&lt;&lt;"🔔 Reminder: "</span>, Rest/binary&gt;&gt;,
+        discord_bot_light_client:send_message(ChannelId, Reminder, Token)
+    end);
+
+<span class="function">handle_message</span>(_, _, _, _) ->
+    ok.</code></pre>
+            </div>
+
+            <div id="advanced" class="tab-content">
+                <h3>Advanced: Stateful Bot with ETS</h3>
+                <p>Bot with persistent state using ETS tables:</p>
+                <pre><code><span class="comment">%%% advanced_bot.erl</span>
+-module(advanced_bot).
+-export([start/1, handle_message/4]).
+
+<span class="function">start</span>(Token) ->
+    <span class="comment">%% Create ETS table for state</span>
+    ets:new(bot_state, [named_table, public, set]),
+    ets:insert(bot_state, {message_count, 0}),
+    
+    Handler = ?MODULE,
+    discord_bot_light_client:start_link(Token, [{command_handler, Handler}]).
+
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!stats"&gt;&gt;</span>, ChannelId, _Author, Token) ->
+    [{_, Count}] = ets:lookup(bot_state, message_count),
+    Response = <span class="string">&lt;&lt;"📈 Messages processed: "</span>, 
+                (integer_to_binary(Count))/binary&gt;&gt;,
+    discord_bot_light_client:send_message(ChannelId, Response, Token);
+
+<span class="function">handle_message</span>(<span class="string">&lt;&lt;"!leaderboard"&gt;&gt;</span>, ChannelId, _Author, Token) ->
+    <span class="comment">%% Get top users from ETS</span>
+    Users = get_top_users(),
+    Board = format_leaderboard(Users),
+    discord_bot_light_client:send_message(ChannelId, Board, Token);
+
+<span class="function">
