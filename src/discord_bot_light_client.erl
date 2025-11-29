@@ -649,94 +649,183 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===============
 %%% Slash Commands API
 %%%===============
-
 %% Register multiple global slash commands at once (bulk operation)
 -spec register_global_commands(list(), binary()) -> {ok, list()} | {error, term()}.
 register_global_commands(Commands, Token) ->
-    BinToken = if is_binary(Token) -> Token; is_list(Token) -> list_to_binary(Token) end,
-
-    % Get app ID from state or fetch it
-    AppId = case get_stored_app_id() of
-        {ok, Id} -> Id;
-        {error, not_available} ->
-            case get_bot_application_id(BinToken) of
-                {ok, Id} -> Id;
-                Error -> throw(Error)
-            end
+    io:format("~n========================================~n"),
+    io:format("REGISTER_GLOBAL_COMMANDS CALLED~n"),
+    io:format("========================================~n"),
+    
+    io:format("[STEP 1] Checking parameters...~n"),
+    io:format("  - Commands is_list: ~p~n", [is_list(Commands)]),
+    io:format("  - Commands length: ~p~n", [try length(Commands) catch _:_ -> error end]),
+    io:format("  - Token is_binary: ~p~n", [is_binary(Token)]),
+    io:format("  - Token is_list: ~p~n", [is_list(Token)]),
+    
+    io:format("[STEP 2] Converting token...~n"),
+    BinToken = try
+        if 
+            is_binary(Token) -> 
+                io:format("  - Token already binary~n"),
+                Token;
+            is_list(Token) -> 
+                io:format("  - Converting list to binary~n"),
+                list_to_binary(Token)
+        end
+    catch
+        EC:ER ->
+            io:format("  - ERROR converting token: ~p:~p~n", [EC, ER]),
+            throw({error, token_conversion_failed})
+    end,
+    io:format("  - Token converted OK (size: ~p bytes)~n", [byte_size(BinToken)]),
+    
+    io:format("[STEP 3] Fetching application ID...~n"),
+    AppId = case get_bot_application_id(BinToken) of
+        {ok, Id} -> 
+            io:format("  - Got Application ID: ~p~n", [Id]),
+            Id;
+        {error, AppError} -> 
+            io:format("  - ERROR getting application ID: ~p~n", [AppError]),
+            throw({error, {app_id_fetch_failed, AppError}});
+        UnexpectedApp ->
+            io:format("  - UNEXPECTED response: ~p~n", [UnexpectedApp]),
+            throw({error, {unexpected_app_response, UnexpectedApp}})
     end,
     
+    io:format("[STEP 4] Preparing TLS options...~n"),
     TLSOpts = [
         {verify, verify_peer},
         {cacerts, certifi:cacerts()},
         {server_name_indication, "discord.com"},
         {customize_hostname_check, [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}
     ],
+    io:format("  - TLS options prepared~n"),
+    
+    io:format("[STEP 5] Preparing connection options...~n"),
     ConnOpts = #{
         transport => tls,
         tls_opts => TLSOpts,
         connect_timeout => ?CONNECTION_TIMEOUT,
         protocols => [http]
     },
-
-    % Use PUT to replace all global commands at once
+    io:format("  - Connection options prepared~n"),
+    
+    io:format("[STEP 6] Building URL...~n"),
     URL = "/api/v10/applications/" ++ binary_to_list(AppId) ++ "/commands",
-
+    io:format("  - URL: ~s~n", [URL]),
+    
+    io:format("[STEP 7] Opening connection to discord.com:443...~n"),
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
+            io:format("  - Connection opened: ~p~n", [Conn]),
+            
+            io:format("[STEP 8] Waiting for connection up...~n"),
             case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
-                {ok, _Protocol} ->
+                {ok, Protocol} ->
+                    io:format("  - Connection UP with protocol: ~p~n", [Protocol]),
+                    
+                    io:format("[STEP 9] Preparing headers...~n"),
                     Headers = [
                         {<<"authorization">>, <<"Bot ", BinToken/binary>>},
                         {<<"content-type">>, <<"application/json">>}
                     ],
+                    io:format("  - Headers prepared (auth token size: ~p)~n", [byte_size(BinToken) + 4]),
                     
-                    % Format commands for bulk registration
+                    io:format("[STEP 10] Formatting commands...~n"),
                     FormattedCommands = lists:map(fun(Command) ->
                         Name = maps:get(<<"name">>, Command),
                         Description = maps:get(<<"description">>, Command),
                         Options = maps:get(<<"options">>, Command, []),
+                        io:format("  - Formatting: ~s (~p options)~n", [Name, length(Options)]),
                         #{
                             name => Name,
                             description => Description,
                             options => Options
                         }
                     end, Commands),
+                    io:format("  - All commands formatted: ~p total~n", [length(FormattedCommands)]),
                     
-                    Payload = jsone:encode(FormattedCommands),
+                    io:format("[STEP 11] Encoding payload to JSON...~n"),
+                    Payload = try
+                        P = jsone:encode(FormattedCommands),
+                        io:format("  - Payload encoded (~p bytes)~n", [byte_size(P)]),
+                        P
+                    catch
+                        EJ:RJ ->
+                            io:format("  - ERROR encoding JSON: ~p:~p~n", [EJ, RJ]),
+                            gun:close(Conn),
+                            throw({error, json_encoding_failed})
+                    end,
                     
+                    io:format("[STEP 12] Sending PUT request...~n"),
                     StreamRef = gun:put(Conn, URL, Headers, Payload),
+                    io:format("  - PUT sent, stream ref: ~p~n", [StreamRef]),
+                    
+                    io:format("[STEP 13] Awaiting response (timeout: ~p ms)...~n", [?CONNECTION_TIMEOUT]),
                     case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
-                        {response, nofin, Status, _Headers} when Status >= 200, Status < 300 ->
+                        {response, nofin, Status, ResponseHeaders} when Status >= 200, Status < 300 ->
+                            io:format("  - SUCCESS! Status: ~p~n", [Status]),
+                            io:format("  - Response headers: ~p~n", [ResponseHeaders]),
+                            
+                            io:format("[STEP 14] Reading response body...~n"),
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
+                                    io:format("  - Body received (~p bytes)~n", [byte_size(Body)]),
                                     gun:close(Conn),
-                                    Response = jsone:decode(Body),
-                                    io:format("All commands registered successfully: ~p~n", [Response]),
+                                    
+                                    io:format("[STEP 15] Decoding response...~n"),
+                                    Response = try
+                                        R = jsone:decode(Body),
+                                        io:format("  - Response decoded successfully~n"),
+                                        R
+                                    catch
+                                        ED:RD ->
+                                            io:format("  - ERROR decoding response: ~p:~p~n", [ED, RD]),
+                                            io:format("  - Raw body: ~s~n", [Body]),
+                                            throw({error, response_decode_failed})
+                                    end,
+                                    
+                                    io:format("~n========================================~n"),
+                                    io:format("SUCCESS! All commands registered!~n"),
+                                    io:format("========================================~n~n"),
                                     {ok, Response};
-                                AllRegError ->
+                                    
+                                {error, BodyError} ->
+                                    io:format("  - ERROR reading body: ~p~n", [BodyError]),
                                     gun:close(Conn),
-                                    AllRegError
+                                    {error, {body_read_failed, BodyError}}
                             end;
+                            
                         {response, nofin, Status, _Headers} ->
+                            io:format("  - ERROR! Status: ~p~n", [Status]),
+                            
+                            io:format("[STEP 14-ERROR] Reading error body...~n"),
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
+                                    io:format("  - Error body: ~s~n", [Body]),
                                     gun:close(Conn),
-                                    io:format("Error registering commands (Status ~p): ~p~n", [Status, Body]),
                                     {error, {status, Status, Body}};
                                 _ ->
+                                    io:format("  - Could not read error body~n"),
                                     gun:close(Conn),
                                     {error, {status, Status}}
                             end;
-                        {error, Reason} ->
+                            
+                        {error, AwaitReason} ->
+                            io:format("  - ERROR in gun:await: ~p~n", [AwaitReason]),
                             gun:close(Conn),
-                            {error, Reason}
+                            {error, {await_failed, AwaitReason}}
                     end;
-                {error, Reason} ->
+                    
+                {error, UpReason} ->
+                    io:format("  - ERROR waiting for connection UP: ~p~n", [UpReason]),
                     gun:close(Conn),
-                    {error, connection_error, Reason}
+                    {error, {connection_up_failed, UpReason}}
             end;
-        {error, Reason} ->
-            {error, connection_error, Reason}
+            
+        {error, OpenReason} ->
+            io:format("  - ERROR opening connection: ~p~n", [OpenReason]),
+            {error, {connection_open_failed, OpenReason}}
     end.
 
 %% Register a global slash command
