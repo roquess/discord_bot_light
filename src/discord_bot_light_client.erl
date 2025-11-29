@@ -9,7 +9,8 @@
 
 -export([register_global_command/3, register_global_command/4,
          register_guild_command/4, register_guild_command/5,
-         respond_to_interaction/3, respond_to_interaction/4]).
+         respond_to_interaction/3, respond_to_interaction/4,
+         respond_to_interaction_with_files/4, respond_to_interaction_with_files/5]).
 
 %% State record definition
 -record(state, {
@@ -851,6 +852,93 @@ respond_to_interaction(InteractionId, InteractionToken, Content, Options) ->
         {error, Reason} ->
             {error, connection_error, Reason}
     end.
+
+%% Respond to a slash command interaction with files
+-spec respond_to_interaction_with_files(binary(), binary(), binary(), [{binary(), binary()}]) -> ok | {error, term()}.
+respond_to_interaction_with_files(InteractionId, InteractionToken, Content, Files) ->
+    respond_to_interaction_with_files(InteractionId, InteractionToken, Content, Files, #{}).
+
+-spec respond_to_interaction_with_files(binary(), binary(), binary(), [{binary(), binary()}], map()) -> ok | {error, term()}.
+respond_to_interaction_with_files(InteractionId, InteractionToken, Content, Files, Options) ->
+    TLSOpts = [
+        {verify, verify_peer},
+        {cacerts, certifi:cacerts()},
+        {server_name_indication, "discord.com"},
+        {customize_hostname_check, [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}
+    ],
+    ConnOpts = #{
+        transport => tls,
+        tls_opts => TLSOpts,
+        connect_timeout => ?CONNECTION_TIMEOUT,
+        protocols => [http]
+    },
+
+    URL = "/api/v10/interactions/" ++ binary_to_list(InteractionId) ++ "/" ++ binary_to_list(InteractionToken) ++ "/callback",
+
+    case gun:open("discord.com", 443, ConnOpts) of
+        {ok, Conn} ->
+            case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
+                {ok, _Protocol} ->
+                    ResponseType = maps:get(type, Options, 4), % 4 = CHANNEL_MESSAGE_WITH_SOURCE
+                    Data = maps:merge(#{content => Content}, maps:get(data, Options, #{})),
+
+                    {Headers, Payload} = case Files of
+                        [] ->
+                            % No files, use JSON
+                            {[{<<"content-type">>, <<"application/json">>}],
+                             jsone:encode(#{
+                                 type => ResponseType,
+                                 data => Data
+                             })};
+                        _ ->
+                            % With files, use multipart/form-data
+                            Boundary = <<"------------------------", (erlang:integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+                            {[{<<"content-type">>, <<"multipart/form-data; boundary=", Boundary/binary>>}],
+                             build_interaction_multipart(ResponseType, Data, Files, Boundary)}
+                    end,
+
+                    StreamRef = gun:post(Conn, URL, Headers, Payload),
+                    case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
+                        {response, fin, 204, _Headers} ->
+                            gun:close(Conn),
+                            ok;
+                        {response, nofin, Status, _Headers} ->
+                            case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
+                                {ok, Body} ->
+                                    gun:close(Conn),
+                                    io:format("Error responding to interaction with files (Status ~p): ~p~n", [Status, Body]),
+                                    {error, {status, Status, Body}};
+                                _ ->
+                                    gun:close(Conn),
+                                    {error, {status, Status}}
+                            end;
+                        {error, Reason} ->
+                            gun:close(Conn),
+                            {error, Reason}
+                    end;
+                {error, Reason} ->
+                    gun:close(Conn),
+                    {error, connection_error, Reason}
+            end;
+        {error, Reason} ->
+            {error, connection_error, Reason}
+    end.
+
+%% Build multipart payload for interaction responses with files
+build_interaction_multipart(ResponseType, Data, Files, Boundary) ->
+    PayloadJson = jsone:encode(#{
+        type => ResponseType,
+        data => Data
+    }),
+    Parts = [
+        <<"--", Boundary/binary, "\r\n",
+          "Content-Disposition: form-data; name=\"payload_json\"\r\n",
+          "Content-Type: application/json\r\n\r\n",
+          PayloadJson/binary, "\r\n">>
+        | build_file_parts(Files, Boundary, 0)
+    ],
+    Parts2 = Parts ++ [<<"--", Boundary/binary, "--\r\n">>],
+    iolist_to_binary(Parts2).
 
 %% Helper to get bot application ID
 -spec get_bot_application_id(binary()) -> {ok, binary()} | {error, term()}.
