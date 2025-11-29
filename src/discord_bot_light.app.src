@@ -1,6 +1,6 @@
 {application, discord_bot_light,
  [{description, "A simple library for creating Discord bot"},
-  {vsn, "1.2.0"},
+  {vsn, "1.3.0"},
   {registered, []},
   {mod, {discord_bot_light_app, []}},
   {applications,
