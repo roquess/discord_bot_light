@@ -235,6 +235,18 @@ handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"READY">>, <<"d">> := Data,
     Username = maps:get(<<"username">>, User),
     BotId = maps:get(<<"id">>, User),
     io:format("Bot ready! Connected as ~s (id=~s)~n", [Username, BotId]),
+    
+    case State#state.command_handler of
+        undefined -> ok;
+        Handler when is_atom(Handler) ->
+            try
+                Handler:on_ready(State#state.token)
+            catch
+                _:_ -> ok
+            end;
+        _ -> ok
+    end,
+    
     {noreply, State#state{seq = Seq, session_id = SessionId, bot_id = BotId}};
 
 handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"MESSAGE_CREATE">>, <<"d">> := Data, <<"s">> := Seq}, State) ->
