@@ -2,15 +2,16 @@
 -behaviour(gen_server).
 
 %% API exports
--export([start_link/1, start_link/2, send_message/3, send_message_with_files/4, edit_message/4]).
+-export([start_link/1, start_link/2, send_message/3, send_message_with_files/4, edit_message/4, get_stored_app_id/0]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
--export([register_global_command/3, register_global_command/4,
+-export([register_global_commands/2, register_global_command/3, register_global_command/4,
          register_guild_command/4, register_guild_command/5,
          respond_to_interaction/3, respond_to_interaction/4,
-         respond_to_interaction_with_files/4, respond_to_interaction_with_files/5]).
+         respond_to_interaction_with_files/4, respond_to_interaction_with_files/5,
+         edit_interaction_response/3, edit_interaction_response/4]).
 
 %% State record definition
 -record(state, {
@@ -21,6 +22,7 @@
           heartbeat_ref = undefined,% Heartbeat timer reference
           stream_ref = undefined,   % WebSocket stream reference
           bot_id = undefined,       % Bot's user ID
+          app_id = undefined,       % Application ID
           command_handler = undefined,  % Command handler configuration
           ws_connected = false,     % WebSocket connection status
           reconnect_attempts = 0,   % Number of reconnection attempts
@@ -50,8 +52,18 @@ start_link(Token, Options) ->
 init([Token, Options]) ->
     process_flag(trap_exit, true),
     CommandHandler = proplists:get_value(command_handler, Options, undefined),
+    BinToken = if is_binary(Token) -> Token; is_list(Token) -> list_to_binary(Token) end,
+    AppId = case get_bot_application_id(BinToken) of
+        {ok, Id} -> Id;
+        _ -> undefined
+    end,
     self() ! connect,
-    {ok, #state{token = Token, command_handler = CommandHandler}}.
+    {ok, #state{token = Token, command_handler = CommandHandler, app_id = AppId}}.
+
+%% Get the stored application ID
+-spec get_stored_app_id() -> {ok, binary()} | {error, not_available}.
+get_stored_app_id() ->
+    gen_server:call(?MODULE, get_app_id).
 
 handle_info(connect, State) ->
     io:format("Connecting to Discord Gateway (attempt ~p)...~n", [State#state.reconnect_attempts + 1]),
@@ -618,6 +630,11 @@ safe_ws_send(State, Conn, StreamRef, Msg) ->
 %%%===============
 %%% gen_server boilerplate
 %%%===============
+handle_call(get_app_id, _From, State) ->
+    case State#state.app_id of
+        undefined -> {reply, {error, not_available}, State};
+        AppId -> {reply, {ok, AppId}, State}
+    end;
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 handle_cast(_Msg, State) ->
@@ -632,6 +649,95 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===============
 %%% Slash Commands API
 %%%===============
+
+%% Register multiple global slash commands at once (bulk operation)
+-spec register_global_commands(list(), binary()) -> {ok, list()} | {error, term()}.
+register_global_commands(Commands, Token) ->
+    BinToken = if is_binary(Token) -> Token; is_list(Token) -> list_to_binary(Token) end,
+
+    % Get app ID from state or fetch it
+    AppId = case get_stored_app_id() of
+        {ok, Id} -> Id;
+        {error, not_available} ->
+            case get_bot_application_id(BinToken) of
+                {ok, Id} -> Id;
+                Error -> throw(Error)
+            end
+    end,
+    
+    TLSOpts = [
+        {verify, verify_peer},
+        {cacerts, certifi:cacerts()},
+        {server_name_indication, "discord.com"},
+        {customize_hostname_check, [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}
+    ],
+    ConnOpts = #{
+        transport => tls,
+        tls_opts => TLSOpts,
+        connect_timeout => ?CONNECTION_TIMEOUT,
+        protocols => [http]
+    },
+
+    % Use PUT to replace all global commands at once
+    URL = "/api/v10/applications/" ++ binary_to_list(AppId) ++ "/commands",
+
+    case gun:open("discord.com", 443, ConnOpts) of
+        {ok, Conn} ->
+            case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
+                {ok, _Protocol} ->
+                    Headers = [
+                        {<<"authorization">>, <<"Bot ", BinToken/binary>>},
+                        {<<"content-type">>, <<"application/json">>}
+                    ],
+                    
+                    % Format commands for bulk registration
+                    FormattedCommands = lists:map(fun(Command) ->
+                        Name = maps:get(<<"name">>, Command),
+                        Description = maps:get(<<"description">>, Command),
+                        Options = maps:get(<<"options">>, Command, []),
+                        #{
+                            name => Name,
+                            description => Description,
+                            options => Options
+                        }
+                    end, Commands),
+                    
+                    Payload = jsone:encode(FormattedCommands),
+                    
+                    StreamRef = gun:put(Conn, URL, Headers, Payload),
+                    case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
+                        {response, nofin, Status, _Headers} when Status >= 200, Status < 300 ->
+                            case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
+                                {ok, Body} ->
+                                    gun:close(Conn),
+                                    Response = jsone:decode(Body),
+                                    io:format("All commands registered successfully: ~p~n", [Response]),
+                                    {ok, Response};
+                                AllRegError ->
+                                    gun:close(Conn),
+                                    AllRegError
+                            end;
+                        {response, nofin, Status, _Headers} ->
+                            case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
+                                {ok, Body} ->
+                                    gun:close(Conn),
+                                    io:format("Error registering commands (Status ~p): ~p~n", [Status, Body]),
+                                    {error, {status, Status, Body}};
+                                _ ->
+                                    gun:close(Conn),
+                                    {error, {status, Status}}
+                            end;
+                        {error, Reason} ->
+                            gun:close(Conn),
+                            {error, Reason}
+                    end;
+                {error, Reason} ->
+                    gun:close(Conn),
+                    {error, connection_error, Reason}
+            end;
+        {error, Reason} ->
+            {error, connection_error, Reason}
+    end.
 
 %% Register a global slash command
 -spec register_global_command(binary(), binary(), binary()) -> {ok, binary()} | {error, term()}.
@@ -1023,4 +1129,86 @@ handle_slash_command(CommandName, Options, InteractionId, InteractionToken, User
         Other ->
             io:format("Invalid command handler configuration: ~p~n", [Other]),
             respond_to_interaction(InteractionId, InteractionToken, <<"Invalid command handler configuration">>)
+    end.
+
+-spec edit_interaction_response(binary(), binary(), binary()) -> ok | {error, term()}.
+edit_interaction_response(InteractionToken, MessageId, Content) ->
+    edit_interaction_response(InteractionToken, MessageId, Content, #{}).
+
+-spec edit_interaction_response(binary(), binary(), binary(), map()) -> ok | {error, term()}.
+edit_interaction_response(InteractionToken, MessageId, Content, Options) ->
+    TLSOpts = [
+        {verify, verify_peer},
+        {cacerts, certifi:cacerts()},
+        {server_name_indication, "discord.com"},
+        {customize_hostname_check, [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}
+    ],
+    ConnOpts = #{
+        transport => tls,
+        tls_opts => TLSOpts,
+        connect_timeout => ?CONNECTION_TIMEOUT,
+        protocols => [http]
+    },
+
+    % For editing the original response, use "@original" as MessageId
+    MsgId = case MessageId of
+        <<"@original">> -> <<"@original">>;
+        _ -> MessageId
+    end,
+
+    % Get the application ID from state
+    AppId = case get_bot_application_id(InteractionToken) of
+        {ok, Id} -> Id;
+        {error, not_ready} ->
+            % If bot not ready yet, this shouldn't happen in normal flow
+            io:format("Warning: Bot ID not available for edit_interaction_response~n"),
+            throw({error, bot_not_ready})
+    end,
+
+    URL = "/api/v10/webhooks/" ++ binary_to_list(AppId) 
+          ++ "/" ++ binary_to_list(InteractionToken) ++ "/messages/" ++ binary_to_list(MsgId),
+
+    case gun:open("discord.com", 443, ConnOpts) of
+        {ok, Conn} ->
+            case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
+                {ok, _Protocol} ->
+                    Headers = [{<<"content-type">>, <<"application/json">>}],
+                    
+                    Data = maps:merge(#{content => Content}, Options),
+                    Payload = jsone:encode(Data),
+
+                    StreamRef = gun:patch(Conn, URL, Headers, Payload),
+                    case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
+                        {response, nofin, Status, _Headers} when Status >= 200, Status < 300 ->
+                            case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
+                                {ok, _Body} ->
+                                    gun:close(Conn),
+                                    ok;
+                                Error ->
+                                    gun:close(Conn),
+                                    Error
+                            end;
+                        {response, fin, Status, _Headers} when Status >= 200, Status < 300 ->
+                            gun:close(Conn),
+                            ok;
+                        {response, nofin, Status, _Headers} ->
+                            case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
+                                {ok, Body} ->
+                                    gun:close(Conn),
+                                    io:format("Error editing interaction response (Status ~p): ~p~n", [Status, Body]),
+                                    {error, {status, Status, Body}};
+                                _ ->
+                                    gun:close(Conn),
+                                    {error, {status, Status}}
+                            end;
+                        {error, Reason} ->
+                            gun:close(Conn),
+                            {error, Reason}
+                    end;
+                {error, Reason} ->
+                    gun:close(Conn),
+                    {error, connection_error, Reason}
+            end;
+        {error, Reason} ->
+            {error, connection_error, Reason}
     end.
