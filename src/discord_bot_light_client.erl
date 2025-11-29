@@ -652,179 +652,106 @@ code_change(_OldVsn, State, _Extra) ->
 %% Register multiple global slash commands at once (bulk operation)
 -spec register_global_commands(list(), binary()) -> {ok, list()} | {error, term()}.
 register_global_commands(Commands, Token) ->
-    io:format("~n========================================~n"),
-    io:format("REGISTER_GLOBAL_COMMANDS CALLED~n"),
-    io:format("========================================~n"),
-    
-    io:format("[STEP 1] Checking parameters...~n"),
-    io:format("  - Commands is_list: ~p~n", [is_list(Commands)]),
-    io:format("  - Commands length: ~p~n", [try length(Commands) catch _:_ -> error end]),
-    io:format("  - Token is_binary: ~p~n", [is_binary(Token)]),
-    io:format("  - Token is_list: ~p~n", [is_list(Token)]),
-    
-    io:format("[STEP 2] Converting token...~n"),
     BinToken = try
         if 
             is_binary(Token) -> 
-                io:format("  - Token already binary~n"),
                 Token;
             is_list(Token) -> 
-                io:format("  - Converting list to binary~n"),
                 list_to_binary(Token)
         end
     catch
-        EC:ER ->
-            io:format("  - ERROR converting token: ~p:~p~n", [EC, ER]),
+        _ ->
             throw({error, token_conversion_failed})
     end,
-    io:format("  - Token converted OK (size: ~p bytes)~n", [byte_size(BinToken)]),
-    
-    io:format("[STEP 3] Fetching application ID...~n"),
     AppId = case get_bot_application_id(BinToken) of
         {ok, Id} -> 
-            io:format("  - Got Application ID: ~p~n", [Id]),
             Id;
         {error, AppError} -> 
-            io:format("  - ERROR getting application ID: ~p~n", [AppError]),
             throw({error, {app_id_fetch_failed, AppError}});
         UnexpectedApp ->
-            io:format("  - UNEXPECTED response: ~p~n", [UnexpectedApp]),
             throw({error, {unexpected_app_response, UnexpectedApp}})
     end,
     
-    io:format("[STEP 4] Preparing TLS options...~n"),
     TLSOpts = [
         {verify, verify_peer},
         {cacerts, certifi:cacerts()},
         {server_name_indication, "discord.com"},
         {customize_hostname_check, [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}
     ],
-    io:format("  - TLS options prepared~n"),
-    
-    io:format("[STEP 5] Preparing connection options...~n"),
     ConnOpts = #{
         transport => tls,
         tls_opts => TLSOpts,
         connect_timeout => ?CONNECTION_TIMEOUT,
         protocols => [http]
     },
-    io:format("  - Connection options prepared~n"),
-    
-    io:format("[STEP 6] Building URL...~n"),
     URL = "/api/v10/applications/" ++ binary_to_list(AppId) ++ "/commands",
-    io:format("  - URL: ~s~n", [URL]),
-    
-    io:format("[STEP 7] Opening connection to discord.com:443...~n"),
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
-            io:format("  - Connection opened: ~p~n", [Conn]),
-            
-            io:format("[STEP 8] Waiting for connection up...~n"),
             case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
-                {ok, Protocol} ->
-                    io:format("  - Connection UP with protocol: ~p~n", [Protocol]),
-                    
-                    io:format("[STEP 9] Preparing headers...~n"),
+                {ok, _Protocol} ->
                     Headers = [
                         {<<"authorization">>, <<"Bot ", BinToken/binary>>},
                         {<<"content-type">>, <<"application/json">>}
                     ],
-                    io:format("  - Headers prepared (auth token size: ~p)~n", [byte_size(BinToken) + 4]),
-                    
-                    io:format("[STEP 10] Formatting commands...~n"),
                     FormattedCommands = lists:map(fun(Command) ->
                         Name = maps:get(<<"name">>, Command),
                         Description = maps:get(<<"description">>, Command),
                         Options = maps:get(<<"options">>, Command, []),
-                        io:format("  - Formatting: ~s (~p options)~n", [Name, length(Options)]),
                         #{
                             name => Name,
                             description => Description,
                             options => Options
                         }
                     end, Commands),
-                    io:format("  - All commands formatted: ~p total~n", [length(FormattedCommands)]),
-                    
-                    io:format("[STEP 11] Encoding payload to JSON...~n"),
                     Payload = try
                         P = jsone:encode(FormattedCommands),
-                        io:format("  - Payload encoded (~p bytes)~n", [byte_size(P)]),
                         P
                     catch
-                        EJ:RJ ->
-                            io:format("  - ERROR encoding JSON: ~p:~p~n", [EJ, RJ]),
+                        _ ->
                             gun:close(Conn),
                             throw({error, json_encoding_failed})
                     end,
-                    
-                    io:format("[STEP 12] Sending PUT request...~n"),
                     StreamRef = gun:put(Conn, URL, Headers, Payload),
-                    io:format("  - PUT sent, stream ref: ~p~n", [StreamRef]),
-                    
-                    io:format("[STEP 13] Awaiting response (timeout: ~p ms)...~n", [?CONNECTION_TIMEOUT]),
                     case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
-                        {response, nofin, Status, ResponseHeaders} when Status >= 200, Status < 300 ->
-                            io:format("  - SUCCESS! Status: ~p~n", [Status]),
-                            io:format("  - Response headers: ~p~n", [ResponseHeaders]),
-                            
-                            io:format("[STEP 14] Reading response body...~n"),
+                        {response, nofin, Status, _ResponseHeaders} when Status >= 200, Status < 300 ->
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
-                                    io:format("  - Body received (~p bytes)~n", [byte_size(Body)]),
                                     gun:close(Conn),
-                                    
-                                    io:format("[STEP 15] Decoding response...~n"),
                                     Response = try
                                         R = jsone:decode(Body),
-                                        io:format("  - Response decoded successfully~n"),
                                         R
                                     catch
-                                        ED:RD ->
-                                            io:format("  - ERROR decoding response: ~p:~p~n", [ED, RD]),
-                                            io:format("  - Raw body: ~s~n", [Body]),
+                                        _ ->
                                             throw({error, response_decode_failed})
                                     end,
-                                    
-                                    io:format("~n========================================~n"),
-                                    io:format("SUCCESS! All commands registered!~n"),
-                                    io:format("========================================~n~n"),
                                     {ok, Response};
                                     
                                 {error, BodyError} ->
-                                    io:format("  - ERROR reading body: ~p~n", [BodyError]),
                                     gun:close(Conn),
                                     {error, {body_read_failed, BodyError}}
                             end;
                             
                         {response, nofin, Status, _Headers} ->
-                            io:format("  - ERROR! Status: ~p~n", [Status]),
-                            
-                            io:format("[STEP 14-ERROR] Reading error body...~n"),
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
-                                    io:format("  - Error body: ~s~n", [Body]),
                                     gun:close(Conn),
                                     {error, {status, Status, Body}};
                                 _ ->
-                                    io:format("  - Could not read error body~n"),
                                     gun:close(Conn),
                                     {error, {status, Status}}
                             end;
                             
                         {error, AwaitReason} ->
-                            io:format("  - ERROR in gun:await: ~p~n", [AwaitReason]),
                             gun:close(Conn),
                             {error, {await_failed, AwaitReason}}
                     end;
                     
                 {error, UpReason} ->
-                    io:format("  - ERROR waiting for connection UP: ~p~n", [UpReason]),
                     gun:close(Conn),
                     {error, {connection_up_failed, UpReason}}
             end;
             
         {error, OpenReason} ->
-            io:format("  - ERROR opening connection: ~p~n", [OpenReason]),
             {error, {connection_open_failed, OpenReason}}
     end.
 
@@ -876,7 +803,6 @@ register_global_command(CommandName, Description, Options, Token) ->
                                             gun:close(Conn),
                                             Response = jsone:decode(Body),
                                             CommandId = maps:get(<<"id">>, Response),
-                                            io:format("Command registered: ~p (ID: ~p)~n", [CommandName, CommandId]),
                                             {ok, CommandId};
                                         Error ->
                                             gun:close(Conn),
@@ -886,7 +812,6 @@ register_global_command(CommandName, Description, Options, Token) ->
                                     case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                         {ok, Body} ->
                                             gun:close(Conn),
-                                            io:format("Error registering command (Status ~p): ~p~n", [Status, Body]),
                                             {error, {status, Status, Body}};
                                         _ ->
                                             gun:close(Conn),
@@ -954,7 +879,6 @@ register_guild_command(GuildId, CommandName, Description, Options, Token) ->
                                             gun:close(Conn),
                                             Response = jsone:decode(Body),
                                             CommandId = maps:get(<<"id">>, Response),
-                                            io:format("Guild command registered: ~p (ID: ~p)~n", [CommandName, CommandId]),
                                             {ok, CommandId};
                                         Error ->
                                             gun:close(Conn),
@@ -964,7 +888,6 @@ register_guild_command(GuildId, CommandName, Description, Options, Token) ->
                                     case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                         {ok, Body} ->
                                             gun:close(Conn),
-                                            io:format("Error registering guild command (Status ~p): ~p~n", [Status, Body]),
                                             {error, {status, Status, Body}};
                                         _ ->
                                             gun:close(Conn),
@@ -1030,7 +953,6 @@ respond_to_interaction(InteractionId, InteractionToken, Content, Options) ->
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
                                     gun:close(Conn),
-                                    io:format("Error responding to interaction (Status ~p): ~p~n", [Status, Body]),
                                     {error, {status, Status, Body}};
                                 _ ->
                                     gun:close(Conn),
@@ -1101,7 +1023,6 @@ respond_to_interaction_with_files(InteractionId, InteractionToken, Content, File
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
                                     gun:close(Conn),
-                                    io:format("Error responding to interaction with files (Status ~p): ~p~n", [Status, Body]),
                                     {error, {status, Status, Body}};
                                 _ ->
                                     gun:close(Conn),
@@ -1220,6 +1141,7 @@ handle_slash_command(CommandName, Options, InteractionId, InteractionToken, User
             respond_to_interaction(InteractionId, InteractionToken, <<"Invalid command handler configuration">>)
     end.
 
+%% Edit an interaction response (for updating messages after initial response)
 -spec edit_interaction_response(binary(), binary(), binary()) -> ok | {error, term()}.
 edit_interaction_response(InteractionToken, MessageId, Content) ->
     edit_interaction_response(InteractionToken, MessageId, Content, #{}).
@@ -1247,20 +1169,25 @@ edit_interaction_response(InteractionToken, MessageId, Content, Options) ->
 
     % Get the application ID from state
     AppId = case get_bot_application_id(InteractionToken) of
-        {ok, Id} -> Id;
+        {ok, Id} -> 
+            io:format("Got App ID for webhook: ~p~n", [Id]),
+            Id;
         {error, not_ready} ->
-            % If bot not ready yet, this shouldn't happen in normal flow
             io:format("Warning: Bot ID not available for edit_interaction_response~n"),
             throw({error, bot_not_ready})
     end,
 
+    % Webhook URL - NO AUTHORIZATION HEADER NEEDED!
     URL = "/api/v10/webhooks/" ++ binary_to_list(AppId) 
           ++ "/" ++ binary_to_list(InteractionToken) ++ "/messages/" ++ binary_to_list(MsgId),
+    
+    io:format("Edit URL: ~s~n", [URL]),
 
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
             case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
                 {ok, _Protocol} ->
+                    % NO AUTHORIZATION HEADER FOR WEBHOOKS!
                     Headers = [{<<"content-type">>, <<"application/json">>}],
                     
                     Data = maps:merge(#{content => Content}, Options),
@@ -1272,32 +1199,43 @@ edit_interaction_response(InteractionToken, MessageId, Content, Options) ->
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, _Body} ->
                                     gun:close(Conn),
+                                    io:format("Edit successful~n"),
                                     ok;
                                 Error ->
                                     gun:close(Conn),
+                                    io:format("Error reading edit response body: ~p~n", [Error]),
                                     Error
                             end;
                         {response, fin, Status, _Headers} when Status >= 200, Status < 300 ->
                             gun:close(Conn),
+                            io:format("Edit successful (fin)~n"),
                             ok;
                         {response, nofin, Status, _Headers} ->
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
                                     gun:close(Conn),
-                                    io:format("Error editing interaction response (Status ~p): ~p~n", [Status, Body]),
+                                    io:format("Error editing interaction response (Status ~p): ~s~n", [Status, Body]),
                                     {error, {status, Status, Body}};
                                 _ ->
                                     gun:close(Conn),
                                     {error, {status, Status}}
                             end;
+                        {response, fin, Status, _Headers} ->
+                            gun:close(Conn),
+                            io:format("Error editing (Status ~p, no body)~n", [Status]),
+                            {error, {status, Status}};
                         {error, Reason} ->
                             gun:close(Conn),
+                            io:format("Error in gun:await for edit: ~p~n", [Reason]),
                             {error, Reason}
                     end;
                 {error, Reason} ->
                     gun:close(Conn),
+                    io:format("Error establishing connection for edit: ~p~n", [Reason]),
                     {error, connection_error, Reason}
             end;
         {error, Reason} ->
+            io:format("Error opening connection for edit: ~p~n", [Reason]),
             {error, connection_error, Reason}
     end.
+
