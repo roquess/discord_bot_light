@@ -379,7 +379,7 @@ identify(State, Conn, StreamRef, Token) ->
         op => 2,  % IDENTIFY opcode
         d => #{
             token => BinToken,
-            intents => 37632,  % MESSAGE_CONTENT + GUILD_MESSAGES + DIRECT_MESSAGES intents
+            intents => 37633,  % MESSAGE_CONTENT + GUILD_MESSAGES + DIRECT_MESSAGES intents
             properties => #{
                 <<"os">> => <<"linux">>,
                 <<"browser">> => <<"erlang">>,
