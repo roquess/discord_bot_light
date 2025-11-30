@@ -1170,7 +1170,6 @@ edit_interaction_response(InteractionToken, MessageId, Content, Options) ->
     % Get the application ID from state - this should be the BOT's user ID
     AppId = case get_stored_app_id() of
         {ok, Id} -> 
-            io:format("Got App ID: ~p~n", [Id]),
             Id;
         {error, not_ready} ->
             io:format("ERROR: Bot ID not available~n"),
