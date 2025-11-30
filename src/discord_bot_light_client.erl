@@ -1148,11 +1148,6 @@ edit_interaction_response(InteractionToken, MessageId, Content) ->
 
 -spec edit_interaction_response(binary(), binary(), binary(), map()) -> ok | {error, term()}.
 edit_interaction_response(InteractionToken, MessageId, Content, Options) ->
-    io:format("=== EDIT_INTERACTION_RESPONSE ===~n"),
-    io:format("InteractionToken: ~p~n", [InteractionToken]),
-    io:format("MessageId: ~p~n", [MessageId]),
-    io:format("Content: ~p~n", [Content]),
-    
     TLSOpts = [
         {verify, verify_peer},
         {cacerts, certifi:cacerts()},
@@ -1173,7 +1168,7 @@ edit_interaction_response(InteractionToken, MessageId, Content, Options) ->
     end,
 
     % Get the application ID from state - this should be the BOT's user ID
-    AppId = case get_bot_application_id(InteractionToken) of
+    AppId = case get_stored_app_id() of
         {ok, Id} -> 
             io:format("Got App ID: ~p~n", [Id]),
             Id;
@@ -1187,33 +1182,22 @@ edit_interaction_response(InteractionToken, MessageId, Content, Options) ->
     URL = "/api/v10/webhooks/" ++ binary_to_list(AppId) 
           ++ "/" ++ binary_to_list(InteractionToken) ++ "/messages/" ++ binary_to_list(MsgId),
     
-    io:format("Full URL: ~s~n", [URL]),
-
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
-            io:format("Connection opened~n"),
             case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
                 {ok, _Protocol} ->
-                    io:format("Connection UP~n"),
                     
                     % CRITICAL: Webhooks don't use Authorization header!
                     Headers = [{<<"content-type">>, <<"application/json">>}],
-                    
                     Data = maps:merge(#{content => Content}, Options),
                     Payload = jsone:encode(Data),
-                    
-                    io:format("Sending PATCH with payload: ~s~n", [Payload]),
-
                     StreamRef = gun:patch(Conn, URL, Headers, Payload),
-                    io:format("PATCH sent, awaiting response...~n"),
                     
                     case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                         {response, nofin, Status, _ResponseHeaders} when Status >= 200, Status < 300 ->
-                            io:format("SUCCESS! Status: ~p~n", [Status]),
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
                                     gun:close(Conn),
-                                    io:format("Response body: ~s~n", [Body]),
                                     ok;
                                 Error ->
                                     gun:close(Conn),
@@ -1222,7 +1206,6 @@ edit_interaction_response(InteractionToken, MessageId, Content, Options) ->
                             end;
                         {response, fin, Status, _Headers} when Status >= 200, Status < 300 ->
                             gun:close(Conn),
-                            io:format("SUCCESS (fin)! Status: ~p~n", [Status]),
                             ok;
                         {response, nofin, Status, _Headers} ->
                             io:format("ERROR! Status: ~p~n", [Status]),
