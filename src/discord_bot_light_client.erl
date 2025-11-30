@@ -1148,6 +1148,11 @@ edit_interaction_response(InteractionToken, MessageId, Content) ->
 
 -spec edit_interaction_response(binary(), binary(), binary(), map()) -> ok | {error, term()}.
 edit_interaction_response(InteractionToken, MessageId, Content, Options) ->
+    io:format("=== EDIT_INTERACTION_RESPONSE ===~n"),
+    io:format("InteractionToken: ~p~n", [InteractionToken]),
+    io:format("MessageId: ~p~n", [MessageId]),
+    io:format("Content: ~p~n", [Content]),
+    
     TLSOpts = [
         {verify, verify_peer},
         {cacerts, certifi:cacerts()},
@@ -1167,54 +1172,64 @@ edit_interaction_response(InteractionToken, MessageId, Content, Options) ->
         _ -> MessageId
     end,
 
-    % Get the application ID from state
+    % Get the application ID from state - this should be the BOT's user ID
     AppId = case get_bot_application_id(InteractionToken) of
         {ok, Id} -> 
-            io:format("Got App ID for webhook: ~p~n", [Id]),
+            io:format("Got App ID: ~p~n", [Id]),
             Id;
         {error, not_ready} ->
-            io:format("Warning: Bot ID not available for edit_interaction_response~n"),
+            io:format("ERROR: Bot ID not available~n"),
             throw({error, bot_not_ready})
     end,
 
-    % Webhook URL - NO AUTHORIZATION HEADER NEEDED!
+    % Webhook URL for interaction - IMPORTANT: No auth header needed!
+    % The interaction token itself provides authentication
     URL = "/api/v10/webhooks/" ++ binary_to_list(AppId) 
           ++ "/" ++ binary_to_list(InteractionToken) ++ "/messages/" ++ binary_to_list(MsgId),
     
-    io:format("Edit URL: ~s~n", [URL]),
+    io:format("Full URL: ~s~n", [URL]),
 
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
+            io:format("Connection opened~n"),
             case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
                 {ok, _Protocol} ->
-                    % NO AUTHORIZATION HEADER FOR WEBHOOKS!
+                    io:format("Connection UP~n"),
+                    
+                    % CRITICAL: Webhooks don't use Authorization header!
                     Headers = [{<<"content-type">>, <<"application/json">>}],
                     
                     Data = maps:merge(#{content => Content}, Options),
                     Payload = jsone:encode(Data),
+                    
+                    io:format("Sending PATCH with payload: ~s~n", [Payload]),
 
                     StreamRef = gun:patch(Conn, URL, Headers, Payload),
+                    io:format("PATCH sent, awaiting response...~n"),
+                    
                     case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
-                        {response, nofin, Status, _Headers} when Status >= 200, Status < 300 ->
+                        {response, nofin, Status, _ResponseHeaders} when Status >= 200, Status < 300 ->
+                            io:format("SUCCESS! Status: ~p~n", [Status]),
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
-                                {ok, _Body} ->
+                                {ok, Body} ->
                                     gun:close(Conn),
-                                    io:format("Edit successful~n"),
+                                    io:format("Response body: ~s~n", [Body]),
                                     ok;
                                 Error ->
                                     gun:close(Conn),
-                                    io:format("Error reading edit response body: ~p~n", [Error]),
+                                    io:format("Error reading body: ~p~n", [Error]),
                                     Error
                             end;
                         {response, fin, Status, _Headers} when Status >= 200, Status < 300 ->
                             gun:close(Conn),
-                            io:format("Edit successful (fin)~n"),
+                            io:format("SUCCESS (fin)! Status: ~p~n", [Status]),
                             ok;
                         {response, nofin, Status, _Headers} ->
+                            io:format("ERROR! Status: ~p~n", [Status]),
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
                                     gun:close(Conn),
-                                    io:format("Error editing interaction response (Status ~p): ~s~n", [Status, Body]),
+                                    io:format("Error body: ~s~n", [Body]),
                                     {error, {status, Status, Body}};
                                 _ ->
                                     gun:close(Conn),
@@ -1222,20 +1237,20 @@ edit_interaction_response(InteractionToken, MessageId, Content, Options) ->
                             end;
                         {response, fin, Status, _Headers} ->
                             gun:close(Conn),
-                            io:format("Error editing (Status ~p, no body)~n", [Status]),
+                            io:format("ERROR (fin)! Status: ~p~n", [Status]),
                             {error, {status, Status}};
                         {error, Reason} ->
                             gun:close(Conn),
-                            io:format("Error in gun:await for edit: ~p~n", [Reason]),
+                            io:format("Error in gun:await: ~p~n", [Reason]),
                             {error, Reason}
                     end;
                 {error, Reason} ->
                     gun:close(Conn),
-                    io:format("Error establishing connection for edit: ~p~n", [Reason]),
+                    io:format("Error connection UP: ~p~n", [Reason]),
                     {error, connection_error, Reason}
             end;
         {error, Reason} ->
-            io:format("Error opening connection for edit: ~p~n", [Reason]),
+            io:format("Error opening connection: ~p~n", [Reason]),
             {error, connection_error, Reason}
     end.
 
