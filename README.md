@@ -23,7 +23,7 @@ This library provides a simple, configurable client process that connects to Dis
 Add the following to your `rebar.config` dependencies:
 
 ```erlang
-{discord_bot_light, "1.0.0"}
+{discord_bot_light, "2.0.0"}
 ```
 
 Make sure you also depend on:

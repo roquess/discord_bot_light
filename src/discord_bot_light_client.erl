@@ -1195,7 +1195,7 @@ edit_interaction_response(InteractionToken, MessageId, Content, Options) ->
                     case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                         {response, nofin, Status, _ResponseHeaders} when Status >= 200, Status < 300 ->
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
-                                {ok, Body} ->
+                                {ok, _Body} ->
                                     gun:close(Conn),
                                     ok;
                                 Error ->
