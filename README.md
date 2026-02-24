@@ -28,7 +28,6 @@ Add the following to your `rebar.config` dependencies:
 
 Make sure you also depend on:
 - gun (HTTP/WebSocket client)
-- jsone (JSON library)
 - certifi (CA certificates)
 - public_key (comes with Erlang/OTP)
 
