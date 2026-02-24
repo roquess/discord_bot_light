@@ -81,7 +81,7 @@ handle_info({gun_upgrade, Conn, StreamRef, [<<"websocket">>], _Headers}, State) 
 
 handle_info({gun_ws, Conn, StreamRef, {text, Frame}}, State) ->
     try
-        Decoded = jsone:decode(Frame),
+        Decoded = json:decode(Frame),
         handle_gateway_message(Decoded, State#state{conn=Conn, stream_ref=StreamRef})
     catch
         Class:Reason:Stacktrace ->
@@ -91,11 +91,9 @@ handle_info({gun_ws, Conn, StreamRef, {text, Frame}}, State) ->
 
 % Ignore HTTP connection up/down events (from API calls)
 handle_info({gun_up, Conn, http}, State) when State#state.conn =/= Conn ->
-    % This is from an HTTP API connection, ignore silently
     {noreply, State};
 
 handle_info({gun_down, Conn, http, _Reason, _, _}, State) when State#state.conn =/= Conn ->
-    % This is from an HTTP API connection, ignore silently
     {noreply, State};
 
 handle_info({gun_down, Conn, ws, Reason, _, _}, State = #state{conn = Conn}) ->
@@ -109,7 +107,6 @@ handle_info({gun_error, Conn, StreamRef, Reason}, State = #state{conn = Conn, st
     cleanup_connection(State),
     schedule_reconnect(State);
 
-% Gestion de la perte de connexion générale
 handle_info({gun_down, Conn, _, Reason, _, _}, State = #state{conn = Conn}) ->
     io:format("Connection down: ~p~n", [Reason]),
     maybe_cancel_heartbeat(State),
@@ -124,7 +121,6 @@ handle_info(heartbeat, State = #state{ws_connected = false}) ->
     io:format("No active WebSocket connection for heartbeat~n"),
     {noreply, State};
 
-% Vérifier si le dernier heartbeat a été ACK avant d'envoyer le suivant
 handle_info(heartbeat, State = #state{last_heartbeat_ack = false}) ->
     io:format("Previous heartbeat not ACKed, reconnecting...~n"),
     maybe_cancel_heartbeat(State),
@@ -132,18 +128,17 @@ handle_info(heartbeat, State = #state{last_heartbeat_ack = false}) ->
 
 handle_info(heartbeat, State = #state{conn = Conn, stream_ref = StreamRef, seq = Seq, ws_connected = true}) ->
     Payload = #{op => 1, d => Seq},
-    EncodedPayload = jsone:encode(Payload),
+    EncodedPayload = iolist_to_binary(json:encode(Payload)),
     case safe_ws_send(State, Conn, StreamRef, {text, EncodedPayload}) of
         ok ->
             io:format("Heartbeat sent (seq: ~p)~n", [Seq]),
-            {noreply, State#state{last_heartbeat_ack = false}}; % Attendre l'ACK
+            {noreply, State#state{last_heartbeat_ack = false}};
         Error ->
             io:format("Error sending heartbeat: ~p~n", [Error]),
             maybe_cancel_heartbeat(State),
             schedule_reconnect(State)
     end;
 
-% Timeout de heartbeat - si pas de réponse dans les temps
 handle_info(heartbeat_timeout, State) ->
     io:format("Heartbeat timeout, reconnecting...~n"),
     maybe_cancel_heartbeat(State),
@@ -165,8 +160,8 @@ connect_to_gateway(State) ->
         {customize_hostname_check, [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}
     ],
     ConnOpts = #{
-        transport => tls, 
-        tls_opts => TLSOpts, 
+        transport => tls,
+        tls_opts => TLSOpts,
         protocols => [http],
         retry => 3,
         retry_timeout => 5000,
@@ -199,7 +194,6 @@ schedule_reconnect(State) ->
             io:format("Max reconnection attempts exceeded. Stopping process.~n"),
             {stop, max_reconnect_attempts, reset_connection_state(State#state{reconnect_attempts = NewAttempts})};
         false ->
-            % Exponential backoff with jitter
             Delay = min(?RECONNECT_DELAY_BASE * (1 bsl min(NewAttempts, 6)), 10000) + rand:uniform(5000),
             io:format("Scheduling reconnect in ~p ms (attempt ~p/~p)~n",
                      [Delay, NewAttempts, ?MAX_RECONNECT_ATTEMPTS]),
@@ -210,8 +204,7 @@ schedule_reconnect(State) ->
 cleanup_connection(State) ->
     case State#state.conn of
         undefined -> ok;
-        Conn ->
-            try gun:close(Conn) catch _:_ -> ok end
+        Conn -> try gun:close(Conn) catch _:_ -> ok end
     end.
 
 reset_connection_state(State) ->
@@ -232,11 +225,8 @@ handle_gateway_message(#{<<"op">> := 10, <<"d">> := #{<<"heartbeat_interval">> :
                       State = #state{conn=Conn, stream_ref=StreamRef, token=Token, ws_connected=true}) ->
     io:format("Received Hello, heartbeat interval: ~p ms~n", [Interval]),
     maybe_cancel_heartbeat(State),
-    
-    % Ajuster l'intervalle si nécessaire (minimum 5 secondes)
     AdjustedInterval = max(Interval, 5000),
     io:format("Using heartbeat interval: ~p ms~n", [AdjustedInterval]),
-    
     {ok, HeartbeatRef} = timer:send_interval(AdjustedInterval, heartbeat),
     identify(State, Conn, StreamRef, Token),
     {noreply, State#state{heartbeat_ref = HeartbeatRef, last_heartbeat_ack = true}};
@@ -248,18 +238,12 @@ handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"READY">>, <<"d">> := Data,
     Username = maps:get(<<"username">>, User),
     BotId = maps:get(<<"id">>, User),
     io:format("Bot ready! Connected as ~s (id=~s)~n", [Username, BotId]),
-    
     case State#state.command_handler of
         undefined -> ok;
         Handler when is_atom(Handler) ->
-            try
-                Handler:on_ready(State#state.token)
-            catch
-                _:_ -> ok
-            end;
+            try Handler:on_ready(State#state.token) catch _:_ -> ok end;
         _ -> ok
     end,
-    
     {noreply, State#state{seq = Seq, session_id = SessionId, bot_id = BotId}};
 
 handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"MESSAGE_CREATE">>, <<"d">> := Data, <<"s">> := Seq}, State) ->
@@ -289,21 +273,17 @@ handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"MESSAGE_UPDATE">>, <<"d">>
             {noreply, State#state{seq = Seq}}
     end;
 
-%% Handle INTERACTION_CREATE events (slash commands)
 handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"INTERACTION_CREATE">>, <<"d">> := Data, <<"s">> := Seq}, State) ->
     InteractionType = maps:get(<<"type">>, Data),
     case InteractionType of
-        2 -> % APPLICATION_COMMAND
+        2 ->
             InteractionId = maps:get(<<"id">>, Data),
             InteractionToken = maps:get(<<"token">>, Data),
             CommandData = maps:get(<<"data">>, Data),
             CommandName = maps:get(<<"name">>, CommandData),
             Options = maps:get(<<"options">>, CommandData, []),
             User = maps:get(<<"user">>, maps:get(<<"member">>, Data, Data), #{}),
-            
             io:format("Slash command received: /~s from ~p~n", [CommandName, maps:get(<<"id">>, User, <<"unknown">>)]),
-            
-            % Dispatch to command handler
             handle_slash_command(CommandName, Options, InteractionId, InteractionToken, User, State),
             {noreply, State#state{seq = Seq}};
         _ ->
@@ -311,18 +291,15 @@ handle_gateway_message(#{<<"op">> := 0, <<"t">> := <<"INTERACTION_CREATE">>, <<"
             {noreply, State#state{seq = Seq}}
     end;
 
-% Heartbeat ACK - marquer comme reçu
 handle_gateway_message(#{<<"op">> := 11}, State) ->
     io:format("Heartbeat ACK received~n"),
     {noreply, State#state{last_heartbeat_ack = true}};
 
-% Reconnect demandé par Discord
 handle_gateway_message(#{<<"op">> := 7}, State) ->
     io:format("Discord requested reconnect~n"),
     maybe_cancel_heartbeat(State),
     schedule_reconnect(State);
 
-% Invalid Session
 handle_gateway_message(#{<<"op">> := 9, <<"d">> := false}, State) ->
     io:format("Invalid session, starting fresh connection~n"),
     maybe_cancel_heartbeat(State),
@@ -384,15 +361,12 @@ handle_user_message(Content, ChannelId, Author, State) ->
 %%% Discord API Functions
 %%%===============
 identify(State, Conn, StreamRef, Token) ->
-    BinToken = if
-        is_binary(Token) -> Token;
-        is_list(Token) -> list_to_binary(Token)
-    end,
+    BinToken = if is_binary(Token) -> Token; is_list(Token) -> list_to_binary(Token) end,
     Payload = #{
-        op => 2,  % IDENTIFY opcode
+        op => 2,
         d => #{
             token => BinToken,
-            intents => 37633,  % MESSAGE_CONTENT + GUILD_MESSAGES + DIRECT_MESSAGES intents
+            intents => 37633,
             properties => #{
                 <<"os">> => <<"linux">>,
                 <<"browser">> => <<"erlang">>,
@@ -400,7 +374,7 @@ identify(State, Conn, StreamRef, Token) ->
             }
         }
     },
-    EncodedPayload = jsone:encode(Payload),
+    EncodedPayload = iolist_to_binary(json:encode(Payload)),
     case safe_ws_send(State, Conn, StreamRef, {text, EncodedPayload}) of
         ok ->
             io:format("Identification sent~n");
@@ -410,10 +384,7 @@ identify(State, Conn, StreamRef, Token) ->
 
 -spec send_message(binary(), binary(), binary()) -> {ok, binary()} | {error, term()}.
 send_message(ChannelId, Content, Token) ->
-    BinToken = if
-        is_binary(Token) -> Token;
-        is_list(Token) -> list_to_binary(Token)
-    end,
+    BinToken = if is_binary(Token) -> Token; is_list(Token) -> list_to_binary(Token) end,
     TLSOpts = [
         {verify, verify_peer},
         {cacerts, certifi:cacerts()},
@@ -436,14 +407,14 @@ send_message(ChannelId, Content, Token) ->
                         {<<"authorization">>, <<"Bot ", BinToken/binary>>},
                         {<<"content-type">>, <<"application/json">>}
                     ],
-                    Payload = jsone:encode(#{content => Content}),
+                    Payload = iolist_to_binary(json:encode(#{content => Content})),
                     StreamRef = gun:post(Conn, URL, Headers, Payload),
                     case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                         {response, nofin, 200, _Headers} ->
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
                                     gun:close(Conn),
-                                    case jsone:decode(Body) of
+                                    case json:decode(Body) of
                                         #{<<"id">> := MessageId} -> {ok, MessageId};
                                         _ -> {error, no_message_id}
                                     end;
@@ -493,7 +464,7 @@ send_message_with_files(ChannelId, Content, Token, Files) ->
                             [] ->
                                 {[{<<"authorization">>, <<"Bot ", BinToken/binary>>},
                                   {<<"content-type">>, <<"application/json">>}],
-                                 jsone:encode(#{content => Content})};
+                                 iolist_to_binary(json:encode(#{content => Content}))};
                             _ ->
                                 Boundary = <<"------------------------", (erlang:integer_to_binary(erlang:unique_integer([positive])))/binary>>,
                                 {multipart_headers(BinToken, Boundary),
@@ -505,7 +476,7 @@ send_message_with_files(ChannelId, Content, Token, Files) ->
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
                                     gun:close(Conn),
-                                    case jsone:decode(Body) of
+                                    case json:decode(Body) of
                                         #{<<"id">> := MessageId} -> {ok, MessageId};
                                         _ -> {error, no_message_id}
                                     end;
@@ -526,7 +497,7 @@ multipart_headers(BinToken, Boundary) ->
     ].
 
 build_multipart(Content, Files, Boundary) ->
-    PayloadJson = jsone:encode(#{content => Content}),
+    PayloadJson = iolist_to_binary(json:encode(#{content => Content})),
     Parts = [
         <<"--", Boundary/binary, "\r\n",
           "Content-Disposition: form-data; name=\"payload_json\"\r\n",
@@ -534,8 +505,7 @@ build_multipart(Content, Files, Boundary) ->
           PayloadJson/binary, "\r\n">>
         | build_file_parts(Files, Boundary, 0)
     ],
-    Parts2 = Parts ++ [<<"--", Boundary/binary, "--\r\n">>],
-    iolist_to_binary(Parts2).
+    iolist_to_binary(Parts ++ [<<"--", Boundary/binary, "--\r\n">>]).
 
 build_file_parts([], _Boundary, _Idx) -> [];
 build_file_parts([{Filename, Data}|Rest], Boundary, Idx) ->
@@ -549,10 +519,7 @@ build_file_parts([{Filename, Data}|Rest], Boundary, Idx) ->
 
 -spec edit_message(binary(), binary(), binary(), binary()) -> {ok, integer(), binary()} | {error, term()}.
 edit_message(ChannelId, MessageId, Content, Token) ->
-    BinToken = if
-        is_binary(Token) -> Token;
-        is_list(Token) -> list_to_binary(Token)
-    end,
+    BinToken = if is_binary(Token) -> Token; is_list(Token) -> list_to_binary(Token) end,
     TLSOpts = [
         {verify, verify_peer},
         {cacerts, certifi:cacerts()},
@@ -575,7 +542,7 @@ edit_message(ChannelId, MessageId, Content, Token) ->
                         {<<"authorization">>, <<"Bot ", BinToken/binary>>},
                         {<<"content-type">>, <<"application/json">>}
                     ],
-                    Payload = jsone:encode(#{content => Content}),
+                    Payload = iolist_to_binary(json:encode(#{content => Content})),
                     StreamRef = gun:patch(Conn, URL, Headers, Payload),
                     case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                         {response, nofin, Status, _Headers} ->
@@ -649,29 +616,18 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===============
 %%% Slash Commands API
 %%%===============
-%% Register multiple global slash commands at once (bulk operation)
 -spec register_global_commands(list(), binary()) -> {ok, list()} | {error, term()}.
 register_global_commands(Commands, Token) ->
     BinToken = try
-        if 
-            is_binary(Token) -> 
-                Token;
-            is_list(Token) -> 
-                list_to_binary(Token)
-        end
+        if is_binary(Token) -> Token; is_list(Token) -> list_to_binary(Token) end
     catch
-        _ ->
-            throw({error, token_conversion_failed})
+        _ -> throw({error, token_conversion_failed})
     end,
     AppId = case get_bot_application_id(BinToken) of
-        {ok, Id} -> 
-            Id;
-        {error, AppError} -> 
-            throw({error, {app_id_fetch_failed, AppError}});
-        UnexpectedApp ->
-            throw({error, {unexpected_app_response, UnexpectedApp}})
+        {ok, Id} -> Id;
+        {error, AppError} -> throw({error, {app_id_fetch_failed, AppError}});
+        UnexpectedApp -> throw({error, {unexpected_app_response, UnexpectedApp}})
     end,
-    
     TLSOpts = [
         {verify, verify_peer},
         {cacerts, certifi:cacerts()},
@@ -694,22 +650,16 @@ register_global_commands(Commands, Token) ->
                         {<<"content-type">>, <<"application/json">>}
                     ],
                     FormattedCommands = lists:map(fun(Command) ->
-                        Name = maps:get(<<"name">>, Command),
-                        Description = maps:get(<<"description">>, Command),
-                        Options = maps:get(<<"options">>, Command, []),
                         #{
-                            name => Name,
-                            description => Description,
-                            options => Options
+                            name        => maps:get(<<"name">>, Command),
+                            description => maps:get(<<"description">>, Command),
+                            options     => maps:get(<<"options">>, Command, [])
                         }
                     end, Commands),
                     Payload = try
-                        P = jsone:encode(FormattedCommands),
-                        P
+                        iolist_to_binary(json:encode(FormattedCommands))
                     catch
-                        _ ->
-                            gun:close(Conn),
-                            throw({error, json_encoding_failed})
+                        _ -> gun:close(Conn), throw({error, json_encoding_failed})
                     end,
                     StreamRef = gun:put(Conn, URL, Headers, Payload),
                     case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
@@ -717,45 +667,30 @@ register_global_commands(Commands, Token) ->
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
                                     gun:close(Conn),
-                                    Response = try
-                                        R = jsone:decode(Body),
-                                        R
-                                    catch
-                                        _ ->
-                                            throw({error, response_decode_failed})
-                                    end,
+                                    Response = try json:decode(Body)
+                                               catch _ -> throw({error, response_decode_failed}) end,
                                     {ok, Response};
-                                    
                                 {error, BodyError} ->
                                     gun:close(Conn),
                                     {error, {body_read_failed, BodyError}}
                             end;
-                            
                         {response, nofin, Status, _Headers} ->
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
-                                {ok, Body} ->
-                                    gun:close(Conn),
-                                    {error, {status, Status, Body}};
-                                _ ->
-                                    gun:close(Conn),
-                                    {error, {status, Status}}
+                                {ok, Body} -> gun:close(Conn), {error, {status, Status, Body}};
+                                _          -> gun:close(Conn), {error, {status, Status}}
                             end;
-                            
                         {error, AwaitReason} ->
                             gun:close(Conn),
                             {error, {await_failed, AwaitReason}}
                     end;
-                    
                 {error, UpReason} ->
                     gun:close(Conn),
                     {error, {connection_up_failed, UpReason}}
             end;
-            
         {error, OpenReason} ->
             {error, {connection_open_failed, OpenReason}}
     end.
 
-%% Register a global slash command
 -spec register_global_command(binary(), binary(), binary()) -> {ok, binary()} | {error, term()}.
 register_global_command(CommandName, Description, Token) ->
     register_global_command(CommandName, Description, [], Token).
@@ -763,8 +698,6 @@ register_global_command(CommandName, Description, Token) ->
 -spec register_global_command(binary(), binary(), list(), binary()) -> {ok, binary()} | {error, term()}.
 register_global_command(CommandName, Description, Options, Token) ->
     BinToken = if is_binary(Token) -> Token; is_list(Token) -> list_to_binary(Token) end,
-    
-    % First get bot application ID
     case get_bot_application_id(BinToken) of
         {ok, AppId} ->
             TLSOpts = [
@@ -779,9 +712,7 @@ register_global_command(CommandName, Description, Options, Token) ->
                 connect_timeout => ?CONNECTION_TIMEOUT,
                 protocols => [http]
             },
-            
             URL = "/api/v10/applications/" ++ binary_to_list(AppId) ++ "/commands",
-            
             case gun:open("discord.com", 443, ConnOpts) of
                 {ok, Conn} ->
                     case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
@@ -790,49 +721,39 @@ register_global_command(CommandName, Description, Options, Token) ->
                                 {<<"authorization">>, <<"Bot ", BinToken/binary>>},
                                 {<<"content-type">>, <<"application/json">>}
                             ],
-                            Payload = jsone:encode(#{
-                                name => CommandName,
+                            Payload = iolist_to_binary(json:encode(#{
+                                name        => CommandName,
                                 description => Description,
-                                options => Options
-                            }),
+                                options     => Options
+                            })),
                             StreamRef = gun:post(Conn, URL, Headers, Payload),
                             case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {response, nofin, Status, _Headers} when Status >= 200, Status < 300 ->
                                     case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                         {ok, Body} ->
                                             gun:close(Conn),
-                                            Response = jsone:decode(Body),
-                                            CommandId = maps:get(<<"id">>, Response),
-                                            {ok, CommandId};
+                                            Response = json:decode(Body),
+                                            {ok, maps:get(<<"id">>, Response)};
                                         Error ->
-                                            gun:close(Conn),
-                                            Error
+                                            gun:close(Conn), Error
                                     end;
                                 {response, nofin, Status, _Headers} ->
                                     case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
-                                        {ok, Body} ->
-                                            gun:close(Conn),
-                                            {error, {status, Status, Body}};
-                                        _ ->
-                                            gun:close(Conn),
-                                            {error, {status, Status}}
+                                        {ok, Body} -> gun:close(Conn), {error, {status, Status, Body}};
+                                        _          -> gun:close(Conn), {error, {status, Status}}
                                     end;
                                 {error, Reason} ->
-                                    gun:close(Conn),
-                                    {error, Reason}
+                                    gun:close(Conn), {error, Reason}
                             end;
                         {error, Reason} ->
-                            gun:close(Conn),
-                            {error, connection_error, Reason}
+                            gun:close(Conn), {error, connection_error, Reason}
                     end;
                 {error, Reason} ->
                     {error, connection_error, Reason}
             end;
-        Error ->
-            Error
+        Error -> Error
     end.
 
-%% Register a guild-specific slash command
 -spec register_guild_command(binary(), binary(), binary(), binary()) -> {ok, binary()} | {error, term()}.
 register_guild_command(GuildId, CommandName, Description, Token) ->
     register_guild_command(GuildId, CommandName, Description, [], Token).
@@ -840,7 +761,6 @@ register_guild_command(GuildId, CommandName, Description, Token) ->
 -spec register_guild_command(binary(), binary(), binary(), list(), binary()) -> {ok, binary()} | {error, term()}.
 register_guild_command(GuildId, CommandName, Description, Options, Token) ->
     BinToken = if is_binary(Token) -> Token; is_list(Token) -> list_to_binary(Token) end,
-    
     case get_bot_application_id(BinToken) of
         {ok, AppId} ->
             TLSOpts = [
@@ -855,9 +775,8 @@ register_guild_command(GuildId, CommandName, Description, Options, Token) ->
                 connect_timeout => ?CONNECTION_TIMEOUT,
                 protocols => [http]
             },
-            
-            URL = "/api/v10/applications/" ++ binary_to_list(AppId) ++ "/guilds/" ++ binary_to_list(GuildId) ++ "/commands",
-            
+            URL = "/api/v10/applications/" ++ binary_to_list(AppId)
+                  ++ "/guilds/" ++ binary_to_list(GuildId) ++ "/commands",
             case gun:open("discord.com", 443, ConnOpts) of
                 {ok, Conn} ->
                     case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
@@ -866,49 +785,39 @@ register_guild_command(GuildId, CommandName, Description, Options, Token) ->
                                 {<<"authorization">>, <<"Bot ", BinToken/binary>>},
                                 {<<"content-type">>, <<"application/json">>}
                             ],
-                            Payload = jsone:encode(#{
-                                name => CommandName,
+                            Payload = iolist_to_binary(json:encode(#{
+                                name        => CommandName,
                                 description => Description,
-                                options => Options
-                            }),
+                                options     => Options
+                            })),
                             StreamRef = gun:post(Conn, URL, Headers, Payload),
                             case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {response, nofin, Status, _Headers} when Status >= 200, Status < 300 ->
                                     case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                         {ok, Body} ->
                                             gun:close(Conn),
-                                            Response = jsone:decode(Body),
-                                            CommandId = maps:get(<<"id">>, Response),
-                                            {ok, CommandId};
+                                            Response = json:decode(Body),
+                                            {ok, maps:get(<<"id">>, Response)};
                                         Error ->
-                                            gun:close(Conn),
-                                            Error
+                                            gun:close(Conn), Error
                                     end;
                                 {response, nofin, Status, _Headers} ->
                                     case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
-                                        {ok, Body} ->
-                                            gun:close(Conn),
-                                            {error, {status, Status, Body}};
-                                        _ ->
-                                            gun:close(Conn),
-                                            {error, {status, Status}}
+                                        {ok, Body} -> gun:close(Conn), {error, {status, Status, Body}};
+                                        _          -> gun:close(Conn), {error, {status, Status}}
                                     end;
                                 {error, Reason} ->
-                                    gun:close(Conn),
-                                    {error, Reason}
+                                    gun:close(Conn), {error, Reason}
                             end;
                         {error, Reason} ->
-                            gun:close(Conn),
-                            {error, connection_error, Reason}
+                            gun:close(Conn), {error, connection_error, Reason}
                     end;
                 {error, Reason} ->
                     {error, connection_error, Reason}
             end;
-        Error ->
-            Error
+        Error -> Error
     end.
 
-%% Respond to a slash command interaction
 -spec respond_to_interaction(binary(), binary(), binary()) -> ok | {error, term()}.
 respond_to_interaction(InteractionId, InteractionToken, Content) ->
     respond_to_interaction(InteractionId, InteractionToken, Content, #{}).
@@ -927,50 +836,35 @@ respond_to_interaction(InteractionId, InteractionToken, Content, Options) ->
         connect_timeout => ?CONNECTION_TIMEOUT,
         protocols => [http]
     },
-    
-    URL = "/api/v10/interactions/" ++ binary_to_list(InteractionId) ++ "/" ++ binary_to_list(InteractionToken) ++ "/callback",
-    
+    URL = "/api/v10/interactions/" ++ binary_to_list(InteractionId)
+          ++ "/" ++ binary_to_list(InteractionToken) ++ "/callback",
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
             case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
                 {ok, _Protocol} ->
                     Headers = [{<<"content-type">>, <<"application/json">>}],
-                    
-                    ResponseType = maps:get(type, Options, 4), % 4 = CHANNEL_MESSAGE_WITH_SOURCE
+                    ResponseType = maps:get(type, Options, 4),
                     Data = maps:merge(#{content => Content}, maps:get(data, Options, #{})),
-                    
-                    Payload = jsone:encode(#{
-                        type => ResponseType,
-                        data => Data
-                    }),
-                    
+                    Payload = iolist_to_binary(json:encode(#{type => ResponseType, data => Data})),
                     StreamRef = gun:post(Conn, URL, Headers, Payload),
                     case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                         {response, fin, 204, _Headers} ->
-                            gun:close(Conn),
-                            ok;
+                            gun:close(Conn), ok;
                         {response, nofin, Status, _Headers} ->
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
-                                {ok, Body} ->
-                                    gun:close(Conn),
-                                    {error, {status, Status, Body}};
-                                _ ->
-                                    gun:close(Conn),
-                                    {error, {status, Status}}
+                                {ok, Body} -> gun:close(Conn), {error, {status, Status, Body}};
+                                _          -> gun:close(Conn), {error, {status, Status}}
                             end;
                         {error, Reason} ->
-                            gun:close(Conn),
-                            {error, Reason}
+                            gun:close(Conn), {error, Reason}
                     end;
                 {error, Reason} ->
-                    gun:close(Conn),
-                    {error, connection_error, Reason}
+                    gun:close(Conn), {error, connection_error, Reason}
             end;
         {error, Reason} ->
             {error, connection_error, Reason}
     end.
 
-%% Respond to a slash command interaction with files
 -spec respond_to_interaction_with_files(binary(), binary(), binary(), [{binary(), binary()}]) -> ok | {error, term()}.
 respond_to_interaction_with_files(InteractionId, InteractionToken, Content, Files) ->
     respond_to_interaction_with_files(InteractionId, InteractionToken, Content, Files, #{}).
@@ -989,63 +883,44 @@ respond_to_interaction_with_files(InteractionId, InteractionToken, Content, File
         connect_timeout => ?CONNECTION_TIMEOUT,
         protocols => [http]
     },
-
-    URL = "/api/v10/interactions/" ++ binary_to_list(InteractionId) ++ "/" ++ binary_to_list(InteractionToken) ++ "/callback",
-
+    URL = "/api/v10/interactions/" ++ binary_to_list(InteractionId)
+          ++ "/" ++ binary_to_list(InteractionToken) ++ "/callback",
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
             case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
                 {ok, _Protocol} ->
-                    ResponseType = maps:get(type, Options, 4), % 4 = CHANNEL_MESSAGE_WITH_SOURCE
+                    ResponseType = maps:get(type, Options, 4),
                     Data = maps:merge(#{content => Content}, maps:get(data, Options, #{})),
-
                     {Headers, Payload} = case Files of
                         [] ->
-                            % No files, use JSON
                             {[{<<"content-type">>, <<"application/json">>}],
-                             jsone:encode(#{
-                                 type => ResponseType,
-                                 data => Data
-                             })};
+                             iolist_to_binary(json:encode(#{type => ResponseType, data => Data}))};
                         _ ->
-                            % With files, use multipart/form-data
                             Boundary = <<"------------------------", (erlang:integer_to_binary(erlang:unique_integer([positive])))/binary>>,
                             {[{<<"content-type">>, <<"multipart/form-data; boundary=", Boundary/binary>>}],
                              build_interaction_multipart(ResponseType, Data, Files, Boundary)}
                     end,
-
                     StreamRef = gun:post(Conn, URL, Headers, Payload),
                     case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                         {response, fin, 204, _Headers} ->
-                            gun:close(Conn),
-                            ok;
+                            gun:close(Conn), ok;
                         {response, nofin, Status, _Headers} ->
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
-                                {ok, Body} ->
-                                    gun:close(Conn),
-                                    {error, {status, Status, Body}};
-                                _ ->
-                                    gun:close(Conn),
-                                    {error, {status, Status}}
+                                {ok, Body} -> gun:close(Conn), {error, {status, Status, Body}};
+                                _          -> gun:close(Conn), {error, {status, Status}}
                             end;
                         {error, Reason} ->
-                            gun:close(Conn),
-                            {error, Reason}
+                            gun:close(Conn), {error, Reason}
                     end;
                 {error, Reason} ->
-                    gun:close(Conn),
-                    {error, connection_error, Reason}
+                    gun:close(Conn), {error, connection_error, Reason}
             end;
         {error, Reason} ->
             {error, connection_error, Reason}
     end.
 
-%% Build multipart payload for interaction responses with files
 build_interaction_multipart(ResponseType, Data, Files, Boundary) ->
-    PayloadJson = jsone:encode(#{
-        type => ResponseType,
-        data => Data
-    }),
+    PayloadJson = iolist_to_binary(json:encode(#{type => ResponseType, data => Data})),
     Parts = [
         <<"--", Boundary/binary, "\r\n",
           "Content-Disposition: form-data; name=\"payload_json\"\r\n",
@@ -1053,10 +928,8 @@ build_interaction_multipart(ResponseType, Data, Files, Boundary) ->
           PayloadJson/binary, "\r\n">>
         | build_file_parts(Files, Boundary, 0)
     ],
-    Parts2 = Parts ++ [<<"--", Boundary/binary, "--\r\n">>],
-    iolist_to_binary(Parts2).
+    iolist_to_binary(Parts ++ [<<"--", Boundary/binary, "--\r\n">>]).
 
-%% Helper to get bot application ID
 -spec get_bot_application_id(binary()) -> {ok, binary()} | {error, term()}.
 get_bot_application_id(BinToken) ->
     TLSOpts = [
@@ -1071,7 +944,6 @@ get_bot_application_id(BinToken) ->
         connect_timeout => ?CONNECTION_TIMEOUT,
         protocols => [http]
     },
-    
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
             case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
@@ -1083,23 +955,18 @@ get_bot_application_id(BinToken) ->
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                                 {ok, Body} ->
                                     gun:close(Conn),
-                                    Response = jsone:decode(Body),
-                                    AppId = maps:get(<<"id">>, Response),
-                                    {ok, AppId};
+                                    Response = json:decode(Body),
+                                    {ok, maps:get(<<"id">>, Response)};
                                 Error ->
-                                    gun:close(Conn),
-                                    Error
+                                    gun:close(Conn), Error
                             end;
                         {response, _, Status, _} ->
-                            gun:close(Conn),
-                            {error, {status, Status}};
+                            gun:close(Conn), {error, {status, Status}};
                         {error, Reason} ->
-                            gun:close(Conn),
-                            {error, Reason}
+                            gun:close(Conn), {error, Reason}
                     end;
                 {error, Reason} ->
-                    gun:close(Conn),
-                    {error, connection_error, Reason}
+                    gun:close(Conn), {error, connection_error, Reason}
             end;
         {error, Reason} ->
             {error, connection_error, Reason}
@@ -1110,7 +977,7 @@ get_bot_application_id(BinToken) ->
 %%%===============
 handle_slash_command(CommandName, Options, InteractionId, InteractionToken, User, State) ->
     case State#state.command_handler of
-        undefined -> 
+        undefined ->
             respond_to_interaction(InteractionId, InteractionToken, <<"No command handler configured">>);
         Handler when is_atom(Handler) ->
             try
@@ -1141,7 +1008,6 @@ handle_slash_command(CommandName, Options, InteractionId, InteractionToken, User
             respond_to_interaction(InteractionId, InteractionToken, <<"Invalid command handler configuration">>)
     end.
 
-%% Edit an interaction response (for updating messages after initial response)
 -spec edit_interaction_response(binary(), binary(), binary()) -> ok | {error, term()}.
 edit_interaction_response(InteractionToken, MessageId, Content) ->
     edit_interaction_response(InteractionToken, MessageId, Content, #{}).
@@ -1160,52 +1026,34 @@ edit_interaction_response(InteractionToken, MessageId, Content, Options) ->
         connect_timeout => ?CONNECTION_TIMEOUT,
         protocols => [http]
     },
-
-    % For editing the original response, use "@original" as MessageId
     MsgId = case MessageId of
         <<"@original">> -> <<"@original">>;
         _ -> MessageId
     end,
-
-    % Get the application ID from state - this should be the BOT's user ID
     AppId = case get_stored_app_id() of
-        {ok, Id} -> 
-            Id;
+        {ok, Id} -> Id;
         {error, not_ready} ->
             io:format("ERROR: Bot ID not available~n"),
             throw({error, bot_not_ready})
     end,
-
-    % Webhook URL for interaction - IMPORTANT: No auth header needed!
-    % The interaction token itself provides authentication
-    URL = "/api/v10/webhooks/" ++ binary_to_list(AppId) 
+    URL = "/api/v10/webhooks/" ++ binary_to_list(AppId)
           ++ "/" ++ binary_to_list(InteractionToken) ++ "/messages/" ++ binary_to_list(MsgId),
-    
     case gun:open("discord.com", 443, ConnOpts) of
         {ok, Conn} ->
             case gun:await_up(Conn, ?CONNECTION_TIMEOUT) of
                 {ok, _Protocol} ->
-                    
-                    % CRITICAL: Webhooks don't use Authorization header!
                     Headers = [{<<"content-type">>, <<"application/json">>}],
                     Data = maps:merge(#{content => Content}, Options),
-                    Payload = jsone:encode(Data),
+                    Payload = iolist_to_binary(json:encode(Data)),
                     StreamRef = gun:patch(Conn, URL, Headers, Payload),
-                    
                     case gun:await(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
                         {response, nofin, Status, _ResponseHeaders} when Status >= 200, Status < 300 ->
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
-                                {ok, _Body} ->
-                                    gun:close(Conn),
-                                    ok;
-                                Error ->
-                                    gun:close(Conn),
-                                    io:format("Error reading body: ~p~n", [Error]),
-                                    Error
+                                {ok, _Body} -> gun:close(Conn), ok;
+                                Error -> gun:close(Conn), io:format("Error reading body: ~p~n", [Error]), Error
                             end;
                         {response, fin, Status, _Headers} when Status >= 200, Status < 300 ->
-                            gun:close(Conn),
-                            ok;
+                            gun:close(Conn), ok;
                         {response, nofin, Status, _Headers} ->
                             io:format("ERROR! Status: ~p~n", [Status]),
                             case gun:await_body(Conn, StreamRef, ?CONNECTION_TIMEOUT) of
@@ -1214,8 +1062,7 @@ edit_interaction_response(InteractionToken, MessageId, Content, Options) ->
                                     io:format("Error body: ~s~n", [Body]),
                                     {error, {status, Status, Body}};
                                 _ ->
-                                    gun:close(Conn),
-                                    {error, {status, Status}}
+                                    gun:close(Conn), {error, {status, Status}}
                             end;
                         {response, fin, Status, _Headers} ->
                             gun:close(Conn),
@@ -1235,4 +1082,3 @@ edit_interaction_response(InteractionToken, MessageId, Content, Options) ->
             io:format("Error opening connection: ~p~n", [Reason]),
             {error, connection_error, Reason}
     end.
-
